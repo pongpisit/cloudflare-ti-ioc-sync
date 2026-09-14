@@ -16,7 +16,6 @@ const BUILTIN_FEED_NAMES: Record<string, string> = {
   vxvault_urls: "VXVault",
   threatfox_domains: "Abuse.ch ThreatFox",
   certpl_phishing: "CERT.PL Phishing",
-  dshield_domains: "DShield / maltrail",
   malwaredomains: "URLhaus Domains",
   oisd_big: "OISD Big",
   hagezi_threat: "Hagezi TIF",
@@ -25,7 +24,6 @@ const BUILTIN_FEED_NAMES: Record<string, string> = {
 const BUILTIN_DOMAIN_FEED_IDS = [
   "threatfox_domains",
   "certpl_phishing",
-  "dshield_domains",
   "malwaredomains",
   "oisd_big",
   "hagezi_threat",

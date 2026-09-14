@@ -457,7 +457,7 @@ describe("HTTP auth gate (audit finding src/index.ts:unauth-mutating-routes)", (
     expect(res.status).toBe(200);
     const data = (await res.json()) as { status: string; feeds: unknown[] };
     expect(data.status).toBe("ok");
-    expect(data.feeds.length).toBe(9);
+    expect(data.feeds.length).toBe(8);
   });
 
   it("fails closed with 503 when ADMIN_TOKEN is not configured", async () => {

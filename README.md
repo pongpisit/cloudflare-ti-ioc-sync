@@ -5,7 +5,7 @@ A Cloudflare Worker that pulls OSINT threat-intelligence feeds and keeps two
 
 | Gateway list | Type | Feeds |
 | --- | --- | --- |
-| `CF-IOC-Domains` | DOMAIN | Abuse.ch ThreatFox, CERT.PL, maltrail/DShield, URLhaus domains, OISD Big, Hagezi TIF |
+| `CF-IOC-Domains` | DOMAIN | Abuse.ch ThreatFox, CERT.PL, URLhaus domains, OISD Big, Hagezi TIF |
 | `CF-IOC-URLs` | URL (path-aware) | Abuse.ch URLhaus, OpenPhish, VXVault |
 
 Once the lists are wired into Gateway DNS/HTTP policies (`dns.fqdn in $IOC-Domains`,
@@ -19,7 +19,7 @@ Once the lists are wired into Gateway DNS/HTTP policies (`dns.fqdn in $IOC-Domai
 
 ```
 ┌────────────┐   fetch    ┌───────────────┐   parse    ┌──────────────────────┐
-│ 9 OSINT    │ ─────────▶ │ KV feed cache │ ─────────▶ │ domain / URL buckets │
+│ 8 OSINT    │ ─────────▶ │ KV feed cache │ ─────────▶ │ domain / URL buckets │
 │ feeds      │            │ (5 min TTL)   │            │ + whitelist + dedupe │
 └────────────┘            └───────────────┘            └──────────┬───────────┘
                                                                   │ bulk check

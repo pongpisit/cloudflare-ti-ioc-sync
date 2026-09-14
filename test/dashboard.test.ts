@@ -91,8 +91,8 @@ describe("renderDashboard feed settings", () => {
     const checkboxArea = html.slice(html.indexOf("Feed Settings"), html.indexOf('id="custom-url"'));
     const checked = (checkboxArea.match(/type="checkbox" checked/g) ?? []).length;
     const total = (checkboxArea.match(/type="checkbox"/g) ?? []).length;
-    expect(total).toBe(9);
-    expect(checked).toBe(8);
+    expect(total).toBe(8);
+    expect(checked).toBe(7);
   });
 
   it("renders custom feeds with remove buttons", () => {

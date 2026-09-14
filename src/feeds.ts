@@ -41,20 +41,11 @@ export const FEEDS: Feed[] = [
     format: "csv_threatfox",
     listType: "domain",
   },
-  // ── Cert.PL — Polish CERT phishing domain list ────────────────────
+  // ── Cert.PL — Polish CERT phishing domain list (v2) ────────────────────
   {
     id: "certpl_phishing",
     name: "CERT.PL Phishing domains",
-    url: "https://hole.cert.pl/domains/domains.txt",
-    format: "plain",
-    listType: "domain",
-    maxDomains: 500,
-  },
-  // ── DShield / maltrail — top suspicious domains ───────────────────
-  {
-    id: "dshield_domains",
-    name: "DShield Suspicious Domains",
-    url: "https://raw.githubusercontent.com/stamparm/maltrail/master/trails/static/suspicious/domain.txt",
+    url: "https://hole.cert.pl/domains/v2/domains.txt",
     format: "plain",
     listType: "domain",
     maxDomains: 500,
@@ -76,11 +67,12 @@ export const FEEDS: Feed[] = [
     listType: "domain",
     maxDomains: 500,
   },
-  // ── Hagezi TIF — threat intelligence domain list (capped) ─────────
+  // ── Hagezi TIF — threat intelligence domain list (capped; mini variant,
+  //    wildcard format — extractDomain strips the leading "*.") ─────────
   {
     id: "hagezi_threat",
     name: "Hagezi Threat Intelligence domains",
-    url: "https://raw.githubusercontent.com/hagezi/dns-blocklists/main/domains/tif.txt",
+    url: "https://raw.githubusercontent.com/hagezi/dns-blocklists/main/wildcard/tif.mini.txt",
     format: "plain",
     listType: "domain",
     maxDomains: 1_000,

@@ -18,8 +18,8 @@ describe("FEEDS registry", () => {
     expect(new Set(ids).size).toBe(ids.length);
   });
 
-  it("contains 9 feeds with valid urls and list types", () => {
-    expect(FEEDS.length).toBe(9);
+  it("contains 8 feeds with valid urls and list types", () => {
+    expect(FEEDS.length).toBe(8);
     for (const f of FEEDS) {
       expect(f.url).toMatch(/^https?:\/\//);
       expect(["domain", "url"]).toContain(f.listType);
