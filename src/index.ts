@@ -322,7 +322,7 @@ export async function runSync(env: Env, log?: SyncLogger): Promise<SyncResult> {
   write(`[${clock()}]   [IOC-URLs]     removing ${urlsToRemove.length.toLocaleString()} stale URLs\u2026`);
   const [domainDel, urlDel] = await Promise.all([
     deleteFromList(env, domainsToRemove),
-    deleteFromUrlList(env, urlsToRemove),
+    deleteFromUrlList(env, urlsToRemove, (m) => write(`[${clock()}]   ${m}`)),
   ]);
   write(
     `[${clock()}]   [IOC-Domains]  \u2713 removed ${domainDel.deleted}`,
@@ -330,9 +330,13 @@ export async function runSync(env: Env, log?: SyncLogger): Promise<SyncResult> {
   write(
     `[${clock()}]   [IOC-URLs]     \u2713 removed ${urlDel.deleted}${urlDel.skipped > 0 ? `  (${urlDel.skipped} not found in CF \u2014 skipped)` : ``}`,
   );
+  write(`[${clock()}]   removal phase complete`);
   write(`[${clock()}]   [IOC-Domains]  appending ${domainsToAdd.length.toLocaleString()} new domains\u2026`);
   write(`[${clock()}]   [IOC-URLs]     appending ${urlsToAdd.length.toLocaleString()} new URLs\u2026`);
-  const [domainAdd, urlAdd] = await Promise.all([appendToList(env, domainsToAdd), appendToUrlList(env, urlsToAdd)]);
+  const [domainAdd, urlAdd] = await Promise.all([
+    appendToList(env, domainsToAdd),
+    appendToUrlList(env, urlsToAdd, (m) => write(`[${clock()}]   ${m}`)),
+  ]);
   write(`[${clock()}]   [IOC-Domains]  \u2713 added ${domainAdd.added}`);
   write(
     `[${clock()}]   [IOC-URLs]     \u2713 added ${urlAdd.added}${urlAdd.skipped > 0 ? `  (${urlAdd.skipped} duplicates skipped)` : ``}`,

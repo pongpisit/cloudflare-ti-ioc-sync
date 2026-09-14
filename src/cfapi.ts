@@ -145,6 +145,7 @@ export async function getUrlListItems(env: Env): Promise<Set<string>> {
 export async function appendToUrlList(
   env: Env,
   items: string[],
+  log?: (msg: string) => void,
 ): Promise<{ added: number; skipped: number }> {
   if (items.length === 0) return { added: 0, skipped: 0 };
   let added = 0;
@@ -160,6 +161,9 @@ export async function appendToUrlList(
       const errBody = await res.text();
       const is409 = res.status === 409 || errBody.includes("1204") || errBody.includes("already exists");
       if (is409) {
+        log?.(
+          `\u26A0 url-list append chunk ${chunkLabel(i)} hit a duplicate: HTTP ${res.status} ${errBody.slice(0, 160)} \u2014 retrying ${chunk.length} items one-by-one`,
+        );
         // Retry one-by-one: a single duplicate fails the whole chunk on the URL list
         for (const value of chunk) {
           const r = await patchList(env, env.CF_URL_LIST_ID, {
@@ -184,6 +188,7 @@ export async function appendToUrlList(
 export async function deleteFromUrlList(
   env: Env,
   items: string[],
+  log?: (msg: string) => void,
 ): Promise<{ deleted: number; skipped: number }> {
   if (items.length === 0) return { deleted: 0, skipped: 0 };
   let deleted = 0;
@@ -194,6 +199,10 @@ export async function deleteFromUrlList(
     if (res.ok) {
       deleted += chunk.length;
     } else {
+      const errBody = await res.text();
+      log?.(
+        `\u26A0 url-list remove chunk ${chunkLabel(i)} failed: HTTP ${res.status} ${errBody.slice(0, 160)} \u2014 retrying ${chunk.length} items one-by-one`,
+      );
       // Retry one-by-one: removing an item that is not in the list fails the chunk
       for (const value of chunk) {
         const ok = await removeUrlListSingle(env, value);
@@ -204,6 +213,7 @@ export async function deleteFromUrlList(
         }
         await sleep(RETRY_DELAY_MS);
       }
+      log?.(`\u2192 per-item removal pass done (chunk total deleted so far: ${deleted})`);
     }
     if (i + CHUNK_SIZE < items.length) await sleep(CHUNK_DELAY_MS);
   }
