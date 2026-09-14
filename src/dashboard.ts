@@ -358,6 +358,38 @@ export function renderDashboard(lastSync: SyncResult | null, cfg: FeedConfig = {
     }
     #feed-status { font-size:12px; color:#9ca3af; }
     .feed-hint { width:100%; font-size:11px; color:#6b7280; }
+    #item-search { max-width:180px; }
+
+    /* \u2500\u2500 List items manager \u2500\u2500 */
+    .tabs { display:flex; gap:8px; }
+    .tab {
+      padding:6px 16px; border-radius:8px; border:1px solid #374151;
+      background:#0a0e1a; color:#9ca3af; font-size:12px; font-weight:600; cursor:pointer;
+      transition: opacity .15s;
+    }
+    .tab:hover { opacity:.85; }
+    .tab.active { background:linear-gradient(135deg,#f6821f,#ff4500); color:#fff; border-color:transparent; }
+    .item-value { font-family:monospace; font-size:12px; word-break:break-all; }
+    .badge-manual {
+      display:inline-block; padding:1px 6px; margin-left:8px; border-radius:4px;
+      font-size:9px; font-weight:700; letter-spacing:.05em; text-transform:uppercase;
+      background:rgba(139,92,246,.2); color:#a78bfa; border:1px solid rgba(139,92,246,.35);
+      vertical-align:middle;
+    }
+    .btn-icon {
+      background:rgba(239,68,68,.12); color:#f87171; border:1px solid rgba(239,68,68,.35);
+      border-radius:6px; padding:3px 9px; font-size:11px; cursor:pointer;
+    }
+    .btn-icon:hover { background:rgba(239,68,68,.25); }
+    .items-pager {
+      display:flex; align-items:center; gap:12px; justify-content:center;
+      padding:10px; border-top:1px solid #1f2937; font-size:12px; color:#9ca3af;
+    }
+    .items-pager button {
+      background:#1f2937; color:#e2e8f0; border:1px solid #374151;
+      border-radius:6px; padding:4px 12px; cursor:pointer; font-size:12px;
+    }
+    .items-pager button:disabled { opacity:.4; cursor:not-allowed; }
 
     /* \u2500\u2500 Footer \u2500\u2500 */
     .footer {
@@ -539,6 +571,37 @@ ${feedSettingsRows(cfg)}
         <button class="btn btn-primary" onclick="addCustomFeed()">+ Add Feed</button>
         <span id="feed-status"></span>
         <div class="feed-hint">Only <b>.txt</b> plain-text lists are accepted \u2014 one domain or URL per line, # comments allowed. Custom feeds are capped at 500 items each (max 10 feeds). IP-literal, localhost, and credential-bearing URLs are rejected. Admin actions require the <b>ADMIN_TOKEN</b> secret (prompted once per tab session).</div>
+      </div>
+    </div>
+  </div>
+
+  <!-- List items manager -->
+  <div class="section">
+    <div class="section-title">Gateway List Items \u2014 Manual Add / Remove</div>
+    <div class="table-wrap">
+      <div class="list-header">
+        <div class="tabs">
+          <button id="tab-domain" class="tab active" onclick="switchListTab('domain')">IOC-Domains</button>
+          <button id="tab-url" class="tab" onclick="switchListTab('url')">IOC-URLs</button>
+        </div>
+        <span class="list-count-pill" id="items-count">\u2014</span>
+      </div>
+      <div class="custom-add">
+        <input type="text" id="item-input" placeholder="example.com (comma/newline separated for multiple)" spellcheck="false"/>
+        <button class="btn btn-primary" onclick="addListItems()">+ Add</button>
+        <input type="text" id="item-search" placeholder="Search\u2026" oninput="renderItemsTable()" spellcheck="false"/>
+        <button class="btn btn-secondary" onclick="loadListItems()">\u21BB Load / Refresh</button>
+        <span id="items-status"></span>
+        <div class="feed-hint">Manually added items are stored in KV and survive syncs (they are merged ahead of feed content). Items that come from a feed always return on the next sync if the feed still lists them \u2014 disable the feed to drop them permanently. Whitelisted domains are rejected. The 5,000-item cap applies.</div>
+      </div>
+      <table>
+        <thead><tr><th>Value</th><th style="text-align:right;width:100px"></th></tr></thead>
+        <tbody id="items-tbody"><tr><td colspan="2" class="empty">Press \u21BB Load / Refresh to view items (requires the admin token)</td></tr></tbody>
+      </table>
+      <div class="items-pager">
+        <button id="items-prev" onclick="itemsPage(-1)" disabled>\u2039 Prev</button>
+        <span id="items-page-info">\u2013</span>
+        <button id="items-next" onclick="itemsPage(1)" disabled>Next \u203A</button>
       </div>
     </div>
   </div>
@@ -812,6 +875,170 @@ async function removeCustomFeed(id) {
     }
   } catch(e) {
     document.getElementById('feed-status').textContent = e.message === 'admin token required' ? '\u26BF Admin token required' : '\u274C Network error';
+  }
+}
+// \u2500\u2500 List items manager \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500
+let itemsState = { listType: 'domain', items: [], page: 0, perPage: 50 };
+
+function switchListTab(t) {
+  itemsState.listType = t;
+  itemsState.items = [];
+  itemsState.page = 0;
+  document.getElementById('tab-domain').classList.toggle('active', t === 'domain');
+  document.getElementById('tab-url').classList.toggle('active', t === 'url');
+  document.getElementById('item-input').placeholder = t === 'domain'
+    ? 'example.com (comma/newline separated for multiple)'
+    : 'https://example.com/path (comma/newline separated for multiple)';
+  document.getElementById('items-count').textContent = '\u2014';
+  document.getElementById('items-page-info').textContent = '\u2013';
+  document.getElementById('items-tbody').innerHTML =
+    '<tr><td colspan="2" class="empty">Press \u21BB Load / Refresh to view items (requires the admin token)</td></tr>';
+}
+
+async function loadListItems() {
+  const status = document.getElementById('items-status');
+  const tbody = document.getElementById('items-tbody');
+  tbody.innerHTML = '<tr><td colspan="2" class="empty">Loading\u2026</td></tr>';
+  try {
+    const res = await authFetch('/api/lists/items?list=' + itemsState.listType);
+    const authErr = handleAuthError(res);
+    if (authErr) {
+      status.textContent = authErr;
+      tbody.innerHTML = '<tr><td colspan="2" class="empty">Not loaded</td></tr>';
+      return;
+    }
+    const data = await res.json();
+    if (data.status !== 'ok') {
+      status.textContent = '\u274C ' + (data.error || 'Failed to load');
+      tbody.innerHTML = '<tr><td colspan="2" class="empty">Not loaded</td></tr>';
+      return;
+    }
+    status.textContent = '';
+    itemsState.items = data.items || [];
+    itemsState.page = 0;
+    document.getElementById('items-count').textContent = itemsState.items.length.toLocaleString() + ' items';
+    renderItemsTable();
+  } catch(e) {
+    status.textContent = e.message === 'admin token required' ? '\u26BF Admin token required' : '\u274C Network error';
+    tbody.innerHTML = '<tr><td colspan="2" class="empty">Not loaded</td></tr>';
+  }
+}
+
+function renderItemsTable() {
+  const tbody = document.getElementById('items-tbody');
+  const search = (document.getElementById('item-search').value || '').trim().toLowerCase();
+  const filtered = search
+    ? itemsState.items.filter(function(i){ return i.value.toLowerCase().includes(search); })
+    : itemsState.items;
+  const per = itemsState.perPage;
+  const pages = Math.max(1, Math.ceil(filtered.length / per));
+  if (itemsState.page >= pages) itemsState.page = pages - 1;
+  const slice = filtered.slice(itemsState.page * per, itemsState.page * per + per);
+  tbody.innerHTML = '';
+  if (!slice.length) {
+    const tr = document.createElement('tr');
+    const td = document.createElement('td');
+    td.colSpan = 2;
+    td.className = 'empty';
+    td.textContent = filtered.length ? 'No items on this page' : 'No items in this list';
+    tr.appendChild(td);
+    tbody.appendChild(tr);
+  } else {
+    for (const it of slice) {
+      const tr = document.createElement('tr');
+      const tdV = document.createElement('td');
+      tdV.className = 'item-value';
+      tdV.textContent = it.value;
+      if (it.manual) {
+        const b = document.createElement('span');
+        b.className = 'badge-manual';
+        b.textContent = 'manual';
+        tdV.appendChild(b);
+      }
+      const tdA = document.createElement('td');
+      tdA.style.textAlign = 'right';
+      const btn = document.createElement('button');
+      btn.className = 'btn-icon';
+      btn.textContent = '\u2715 Remove';
+      const val = it.value;
+      const isManual = !!it.manual;
+      btn.addEventListener('click', function() { removeListItem(val, isManual); });
+      tdA.appendChild(btn);
+      tr.appendChild(tdV);
+      tr.appendChild(tdA);
+      tbody.appendChild(tr);
+    }
+  }
+  document.getElementById('items-prev').disabled = itemsState.page <= 0;
+  document.getElementById('items-next').disabled = itemsState.page >= pages - 1;
+  document.getElementById('items-page-info').textContent =
+    (filtered.length ? itemsState.page + 1 : 0) + ' / ' + pages;
+}
+
+function itemsPage(delta) {
+  itemsState.page += delta;
+  renderItemsTable();
+}
+
+async function addListItems() {
+  const input = document.getElementById('item-input');
+  const status = document.getElementById('items-status');
+  const values = input.value.split(/[\n,;]+/).map(function(s){ return s.trim(); }).filter(Boolean);
+  if (!values.length) {
+    status.textContent = '\u274C Enter at least one value';
+    return;
+  }
+  status.textContent = 'Adding\u2026';
+  try {
+    const res = await authFetch('/api/lists/items', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ list: itemsState.listType, items: values })
+    });
+    const authErr = handleAuthError(res);
+    if (authErr) { status.textContent = authErr; return; }
+    const data = await res.json();
+    if (data.status === 'ok') {
+      const skipped = data.skipped || [];
+      status.textContent = '\u2705 Added ' + data.added +
+        (skipped.length
+          ? ' \u2014 skipped ' + skipped.length + ': ' +
+            skipped.slice(0, 3).map(function(s){ return s.value + ' (' + s.reason + ')'; }).join('; ') +
+            (skipped.length > 3 ? ' \u2026' : '')
+          : '');
+      input.value = '';
+      loadListItems();
+    } else {
+      status.textContent = '\u274C ' + (data.error || 'Failed to add');
+    }
+  } catch(e) {
+    status.textContent = e.message === 'admin token required' ? '\u26BF Admin token required' : '\u274C Network error';
+  }
+}
+
+async function removeListItem(value, isManual) {
+  const msg = isManual
+    ? 'Remove ' + value + ' from the list?'
+    : 'Remove ' + value + ' from the list?\n\nNote: this item comes from a feed \u2014 it returns on the next sync if the feed still lists it. Disable the feed to drop it permanently.';
+  if (!confirm(msg)) return;
+  const status = document.getElementById('items-status');
+  try {
+    const res = await authFetch('/api/lists/items/remove', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ list: itemsState.listType, items: [value] })
+    });
+    const authErr = handleAuthError(res);
+    if (authErr) { status.textContent = authErr; return; }
+    const data = await res.json();
+    if (data.status === 'ok') {
+      status.textContent = '\u2705 Removed ' + data.removed;
+      loadListItems();
+    } else {
+      status.textContent = '\u274C ' + (data.error || 'Failed to remove');
+    }
+  } catch(e) {
+    status.textContent = e.message === 'admin token required' ? '\u26BF Admin token required' : '\u274C Network error';
   }
 }
 </script>

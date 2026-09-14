@@ -61,6 +61,12 @@ export async function getListItems(env: Env): Promise<Set<string>> {
   return new Set(items.map((item) => item.value.toLowerCase()));
 }
 
+/** Raw values of a Gateway list, in list order (used by the manual items API). */
+export async function fetchListValues(env: Env, listId: string): Promise<string[]> {
+  const items = await fetchAllListItems(env, listId);
+  return items.map((item) => item.value);
+}
+
 export async function debugListItems(env: Env): Promise<unknown> {
   const url = `${CF_BASE}/accounts/${env.CF_ACCOUNT_ID}/gateway/lists/${env.CF_LIST_ID}/items?page=1&per_page=5`;
   const res = await fetch(url, { headers: headers(env.CF_API_TOKEN) });

@@ -59,18 +59,16 @@ function installFetchMock(opts: FetchMockOptions = {}): { patches: RecordedPatch
       if (url.includes("/intel/")) {
         return Response.json({ success: true, result: [], errors: [] });
       }
-      if (url.includes("/list-dom/")) {
-        return Response.json({
-          success: true,
-          result: (opts.currentDomains ?? []).map((value) => ({ value })),
-          result_info: { total_count: (opts.currentDomains ?? []).length },
-          errors: [],
-        });
-      }
+      // Honor pagination like the real Gateway list API.
+      const parsedUrl = new URL(url);
+      const page = Number(parsedUrl.searchParams.get("page") ?? "1");
+      const per = Number(parsedUrl.searchParams.get("per_page") ?? "1000");
+      const all = url.includes("/list-dom/") ? opts.currentDomains ?? [] : opts.currentUrls ?? [];
+      const slice = all.slice((page - 1) * per, (page - 1) * per + per);
       return Response.json({
         success: true,
-        result: (opts.currentUrls ?? []).map((value) => ({ value })),
-        result_info: { total_count: (opts.currentUrls ?? []).length },
+        result: slice.map((value) => ({ value })),
+        result_info: { total_count: all.length },
         errors: [],
       });
     }
@@ -211,6 +209,210 @@ describe("URL-bucket whitelist enforcement (audit finding src/index.ts:WHITELIST
     expect(appended).toContain("https://microsoft.com.evil.io/b");
     expect(appended).not.toContain("https://microsoft.com/login");
     expect(appended).not.toContain("https://login.microsoft.com/x");
+  });
+});
+
+describe("manual items merge (list management + sync interplay)", () => {
+  it("preserves manual items across syncs while removing stale feed items", async () => {
+    const env = mockEnv();
+    await env.IOC_CACHE.put(
+      "manual_items",
+      JSON.stringify({ domain: ["manual.example.com"], url: [] }),
+    );
+    const { patches } = installFetchMock({
+      currentDomains: ["manual.example.com", "old.domain.example"],
+    });
+    const result = await runSync(env);
+
+    expect(removalsFrom(patches, "list-dom")).toEqual(["old.domain.example"]);
+    expect(result.domains.removed).toBe(1);
+  });
+
+  it("adds manual items that are missing from the live list during a sync", async () => {
+    const env = mockEnv();
+    await env.IOC_CACHE.put(
+      "manual_items",
+      JSON.stringify({ domain: [], url: ["https://manual.example.org/x"] }),
+    );
+    const { patches } = installFetchMock({ currentUrls: [] });
+    await runSync(env);
+
+    expect(appendsFrom(patches, "list-url")).toContain("https://manual.example.org/x");
+  });
+});
+
+describe("manual list items API (GET/POST /api/lists/items)", () => {
+  const ctx = { waitUntil: () => undefined } as unknown as ExecutionContext;
+  const authHeaders = { "X-Auth-Token": "test-admin-token", "Content-Type": "application/json" };
+
+  it("requires the admin token", async () => {
+    installFetchMock();
+    const res = await worker.fetch(new Request("http://x/api/lists/items?list=domain"), mockEnv(), ctx);
+    expect(res.status).toBe(401);
+    const res2 = await worker.fetch(
+      new Request("http://x/api/lists/items", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ list: "domain", items: ["a.com"] }),
+      }),
+      mockEnv(),
+      ctx,
+    );
+    expect(res2.status).toBe(401);
+  });
+
+  it("rejects a bad list parameter with 400", async () => {
+    installFetchMock();
+    const res = await worker.fetch(
+      new Request("http://x/api/lists/items?list=bogus", { headers: authHeaders }),
+      mockEnv(),
+      ctx,
+    );
+    expect(res.status).toBe(400);
+    const res2 = await worker.fetch(
+      new Request("http://x/api/lists/items", {
+        method: "POST",
+        headers: authHeaders,
+        body: JSON.stringify({ list: "bogus", items: ["a.com"] }),
+      }),
+      mockEnv(),
+      ctx,
+    );
+    expect(res2.status).toBe(400);
+  });
+
+  it("lists items with manual flags", async () => {
+    const env = mockEnv();
+    await env.IOC_CACHE.put(
+      "manual_items",
+      JSON.stringify({ domain: ["b.example.com"], url: [] }),
+    );
+    installFetchMock({ currentDomains: ["b.example.com", "a.example.com"] });
+    const res = await worker.fetch(
+      new Request("http://x/api/lists/items?list=domain", { headers: authHeaders }),
+      env,
+      ctx,
+    );
+    const data = (await res.json()) as {
+      status: string;
+      total: number;
+      items: { value: string; manual: boolean }[];
+    };
+    expect(data.status).toBe("ok");
+    expect(data.total).toBe(2);
+    expect(data.items).toEqual([
+      { value: "b.example.com", manual: true },
+      { value: "a.example.com", manual: false },
+    ]);
+  });
+
+  it("adds domains with validation, dedupe, and KV persistence", async () => {
+    const { patches } = installFetchMock({ currentDomains: ["old.domain.example"] });
+    const env = mockEnv();
+    const res = await worker.fetch(
+      new Request("http://x/api/lists/items", {
+        method: "POST",
+        headers: authHeaders,
+        body: JSON.stringify({
+          list: "domain",
+          items: ["New.Example.COM", "new.example.com", "old.domain.example", "microsoft.com", "bad_domain!"],
+        }),
+      }),
+      env,
+      ctx,
+    );
+    const data = (await res.json()) as {
+      status: string;
+      added: number;
+      skipped: { value: string; reason: string }[];
+    };
+    expect(data.status).toBe("ok");
+    expect(data.added).toBe(1);
+    const reasons = Object.fromEntries(data.skipped.map((s) => [s.value, s.reason]));
+    expect(reasons["new.example.com"]).toBe("already in list");
+    expect(reasons["old.domain.example"]).toBe("already in list");
+    expect(reasons["microsoft.com"]).toBe("whitelisted domain");
+    expect(reasons["bad_domain!"]).toBe("invalid domain");
+    expect(appendsFrom(patches, "list-dom")).toContain("new.example.com");
+    const manual = JSON.parse((await env.IOC_CACHE.get("manual_items")) ?? "{}") as {
+      domain: string[];
+    };
+    expect(manual.domain).toEqual(["new.example.com"]);
+  });
+
+  it("adds URLs with normalization and whitelisted-host rejection", async () => {
+    const { patches } = installFetchMock({ currentUrls: [] });
+    const env = mockEnv();
+    const res = await worker.fetch(
+      new Request("http://x/api/lists/items", {
+        method: "POST",
+        headers: authHeaders,
+        body: JSON.stringify({
+          list: "url",
+          items: ["https://Example.ORG/A/", "https://login.microsoft.com/x", "notaurl"],
+        }),
+      }),
+      env,
+      ctx,
+    );
+    const data = (await res.json()) as { added: number; skipped: { value: string; reason: string }[] };
+    expect(data.added).toBe(1);
+    const reasons = Object.fromEntries(data.skipped.map((s) => [s.value, s.reason]));
+    expect(reasons["https://login.microsoft.com/x"]).toBe("whitelisted host");
+    expect(reasons["notaurl"]).toBe("invalid URL");
+    expect(appendsFrom(patches, "list-url")).toContain("https://example.org/a");
+    const manual = JSON.parse((await env.IOC_CACHE.get("manual_items")) ?? "{}") as { url: string[] };
+    expect(manual.url).toEqual(["https://example.org/a"]);
+  });
+
+  it("enforces the 5,000-item cap on adds", async () => {
+    const full = Array.from({ length: 4_999 }, (_, i) => `d${i}.example.com`);
+    installFetchMock({ currentDomains: full });
+    const res = await worker.fetch(
+      new Request("http://x/api/lists/items", {
+        method: "POST",
+        headers: authHeaders,
+        body: JSON.stringify({ list: "domain", items: ["first.example.com", "second.example.com"] }),
+      }),
+      mockEnv(),
+      ctx,
+    );
+    const data = (await res.json()) as { added: number; skipped: { value: string; reason: string }[] };
+    expect(data.added).toBe(1);
+    expect(data.skipped[0]).toEqual({ value: "second.example.com", reason: "list is full (5,000 items)" });
+  });
+
+  it("removes items from the CF list and the manual set", async () => {
+    const env = mockEnv();
+    await env.IOC_CACHE.put(
+      "manual_items",
+      JSON.stringify({ domain: ["manual.example.com"], url: [] }),
+    );
+    const { patches } = installFetchMock({
+      currentDomains: ["manual.example.com", "other.example.com"],
+    });
+    const res = await worker.fetch(
+      new Request("http://x/api/lists/items/remove", {
+        method: "POST",
+        headers: authHeaders,
+        body: JSON.stringify({
+          list: "domain",
+          items: ["manual.example.com", "not-in-list.example.com"],
+        }),
+      }),
+      env,
+      ctx,
+    );
+    const data = (await res.json()) as { status: string; removed: number };
+    expect(data.status).toBe("ok");
+    expect(data.removed).toBe(1);
+    const removed = removalsFrom(patches, "list-dom");
+    expect(removed).toContain("manual.example.com");
+    expect(removed).not.toContain("not-in-list.example.com");
+    const manual = JSON.parse((await env.IOC_CACHE.get("manual_items")) ?? "{}") as {
+      domain: string[];
+    };
+    expect(manual.domain).toEqual([]);
   });
 });
 

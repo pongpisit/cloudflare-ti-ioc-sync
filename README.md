@@ -48,6 +48,13 @@ Once the lists are wired into Gateway DNS/HTTP policies (`dns.fqdn in $IOC-Domai
   the domain list, and URL-bucket items on those hosts or their subdomains are excluded
   from the URL list
 - **Diff-based sync:** only added/removed items are PATCHed to the Gateway lists
+- **Manual list management:** add, remove, and browse individual items in both Gateway
+  lists from the dashboard's *Gateway List Items* section (or the `/api/lists/items*`
+  endpoints). Manually added items are stored in KV (`manual_items`) and **survive
+  syncs** — they are merged ahead of feed content and protected from the removal diff.
+  Feed-sourced items always return on the next sync if the feed still lists them
+  (disable the feed to drop them permanently). Whitelisted domains are rejected and the
+  5,000-item cap is enforced
 - **Access control:** everything except `GET /` and `GET /api/status` requires the
   `ADMIN_TOKEN` Worker secret via the `X-Auth-Token` header (constant-time compared;
   fail-closed with 503 if the secret is unset). The dashboard prompts for the token once
@@ -66,6 +73,9 @@ All routes except the two public reads require an `X-Auth-Token` header matching
 | POST | `/api/feeds/toggle` | 🔒 | Enable/disable a feed — body `{ "id": "oisd_big", "enabled": false }` |
 | POST | `/api/feeds/custom` | 🔒 | Add a custom feed — body `{ "url": "https://…/list.txt", "listType": "domain" }`. **Only `.txt` plain-text URLs are accepted**; capped at 500 items per feed, max 10 custom feeds |
 | POST | `/api/feeds/custom/remove` | 🔒 | Remove a custom feed — body `{ "id": "custom_…" }` |
+| GET | `/api/lists/items?list=domain\|url` | 🔒 | All items of a Gateway list with `manual` flags |
+| POST | `/api/lists/items` | 🔒 | Add items manually — body `{ "list": "domain" \| "url", "items": ["…"] }` (max 1,000; validated; whitelisted/invalid/duplicates skipped with reasons; stored in KV so they survive syncs) |
+| POST | `/api/lists/items/remove` | 🔒 | Remove items — body `{ "list": …, "items": ["…"] }`; also removes them from the manual set |
 | GET | `/sync/stream` | 🔒 | Live streaming log of a full sync run |
 | POST | `/sync` | 🔒 | Trigger sync in background |
 | POST | `/sync/run` | 🔒 | Run sync inline, returns the result JSON |

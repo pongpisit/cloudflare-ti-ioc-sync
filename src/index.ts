@@ -1,4 +1,4 @@
-import { parseFeed } from "./feeds";
+import { isValidDomain, parseFeed, parseUrls } from "./feeds";
 import {
   appendToList,
   appendToUrlList,
@@ -7,11 +7,14 @@ import {
   debugListItems,
   deleteFromList,
   deleteFromUrlList,
+  fetchListValues,
   getListItems,
   getUrlListItems,
 } from "./cfapi";
 import { filterCfKnownThreats } from "./intel";
 import { renderDashboard } from "./dashboard";
+import { loadManualItems, saveManualItems, type ManualItems } from "./listitems";
+import { WHITELIST, isWhitelistedUrl } from "./whitelist";
 import {
   addCustomFeed,
   getActiveFeeds,
@@ -31,31 +34,8 @@ const MAX_FEED_BYTES = 8 * 1024 * 1024;
 const USER_AGENT =
   "Mozilla/5.0 (compatible; CF-TI-Sync/1.0; +https://github.com/pongpisit/cloudflare-ti-ioc-sync)";
 
-// Exact-match whitelist of high-trust domains excluded from the domain list.
-// For URL-bucket items the whitelist is applied to the URL's hostname, including
-// subdomains, so URL feeds cannot push high-trust hosts onto the URL block list.
-const WHITELIST = new Set([
-  "cloudflare.com",
-  "microsoft.com",
-  "windows.com",
-  "office.com",
-  "google.com",
-  "apple.com",
-  "akamai.net",
-  "fastly.net",
-]);
-
-function isWhitelistedUrl(u: string): boolean {
-  try {
-    const host = new URL(u).hostname.toLowerCase();
-    for (const d of WHITELIST) {
-      if (host === d || host.endsWith(`.${d}`)) return true;
-    }
-  } catch {
-    // Not a parseable URL — let the existing diff handling deal with it.
-  }
-  return false;
-}
+// Exact-match whitelist of high-trust domains excluded from the domain list, applied
+// to feed content and manual list management alike (see src/whitelist.ts).
 
 /**
  * Constant-time string comparison for shared-secret checks. The length check leaks
@@ -242,12 +222,22 @@ export async function runSync(env: Env, log?: SyncLogger): Promise<SyncResult> {
       }
     }
   }
+  // Manually added items survive syncs: they are merged into the fresh sets ahead of
+  // feed content, so neither the 5,000-item cap nor the removal diff can drop them.
+  const manual = await loadManualItems(env);
+  const manualDomainSet = new Set(manual.domain);
+  const domainUnion = [...manual.domain];
+  for (const d of freshDomains) if (!manualDomainSet.has(d)) domainUnion.push(d);
+  const manualUrlSet = new Set(manual.url);
+  const urlUnion = [...manual.url];
+  for (const u of freshUrls) if (!manualUrlSet.has(u)) urlUnion.push(u);
+
   const freshDomainSet = new Set(freshDomains.slice(0, CF_LIST_MAX * 2));
-  const freshDomainCapped = [...freshDomainSet].slice(0, CF_LIST_MAX);
+  const freshDomainCapped = [...new Set(domainUnion)].slice(0, CF_LIST_MAX);
   const freshUrlSet = new Set(freshUrls.slice(0, CF_LIST_MAX * 2));
-  const freshUrlCapped = [...freshUrlSet].slice(0, CF_LIST_MAX);
-  const domainCapTruncated = freshDomainSet.size > freshDomainCapped.length;
-  const urlCapTruncated = freshUrlSet.size > freshUrlCapped.length;
+  const freshUrlCapped = [...new Set(urlUnion)].slice(0, CF_LIST_MAX);
+  const domainCapTruncated = new Set(domainUnion).size > freshDomainCapped.length;
+  const urlCapTruncated = new Set(urlUnion).size > freshUrlCapped.length;
 
   if (log) {
     write(`[${clock()}] STEP 2 \u2014 Partitioning into domain / URL buckets`);
@@ -407,6 +397,22 @@ async function readJson<T>(request: Request): Promise<T | null> {
   }
 }
 
+/** Shared body contract for the manual list-items endpoints. */
+async function parseListItemsBody(
+  request: Request,
+): Promise<{ list: FeedListType; items: string[] } | null> {
+  const body = await readJson<{ list?: string; items?: unknown }>(request);
+  if (!body || (body.list !== "domain" && body.list !== "url")) return null;
+  const items = body.items;
+  if (!Array.isArray(items) || items.length === 0 || items.length > 1_000) return null;
+  if (!items.every((x) => typeof x === "string")) return null;
+  return { list: body.list, items };
+}
+
+function listIdFor(env: Env, list: FeedListType): string {
+  return list === "domain" ? env.CF_LIST_ID : env.CF_URL_LIST_ID;
+}
+
 export default {
   // Cron trigger: daily at 08:00 UTC (configured in wrangler.jsonc)
   async scheduled(_controller: ScheduledController, env: Env, ctx: ExecutionContext): Promise<void> {
@@ -497,6 +503,129 @@ export default {
       const removed = await removeCustomFeed(env, body.id);
       if (!removed) return Response.json({ status: "error", error: `unknown custom feed id: ${body.id}` }, { status: 404 });
       return Response.json({ status: "ok", id: body.id });
+    }
+
+    if (request.method === "GET" && url.pathname === "/api/lists/items") {
+      const list = url.searchParams.get("list");
+      if (list !== "domain" && list !== "url") {
+        return Response.json({ status: "error", error: "list must be 'domain' or 'url'" }, { status: 400 });
+      }
+      try {
+        const values = await fetchListValues(env, listIdFor(env, list));
+        const manual = await loadManualItems(env);
+        const manualSet = new Set(list === "domain" ? manual.domain : manual.url);
+        return Response.json({
+          status: "ok",
+          list,
+          items: values.map((v) => ({ value: v, manual: manualSet.has(v) })),
+          total: values.length,
+        });
+      } catch (err) {
+        return Response.json({ status: "error", error: String(err) }, { status: 500 });
+      }
+    }
+
+    if (request.method === "POST" && url.pathname === "/api/lists/items") {
+      const parsed = await parseListItemsBody(request);
+      if (!parsed) {
+        return Response.json(
+          { status: "error", error: "body must be { list: 'domain' | 'url', items: string[] } (max 1,000 items)" },
+          { status: 400 },
+        );
+      }
+      try {
+        const { list } = parsed;
+        const current = await fetchListValues(env, listIdFor(env, list));
+        const currentSet = new Set(current);
+        const manual = await loadManualItems(env);
+        const manualArr = list === "domain" ? manual.domain : manual.url;
+        const manualSet = new Set(manualArr);
+        const skipped: { value: string; reason: string }[] = [];
+        const toAdd: string[] = [];
+        for (const raw of parsed.items) {
+          const v = raw.trim();
+          if (!v) continue;
+          let value: string;
+          if (list === "domain") {
+            if (!isValidDomain(v)) {
+              skipped.push({ value: v, reason: "invalid domain" });
+              continue;
+            }
+            if (WHITELIST.has(v.toLowerCase())) {
+              skipped.push({ value: v, reason: "whitelisted domain" });
+              continue;
+            }
+            value = v.toLowerCase();
+          } else {
+            const normalized = parseUrls(v);
+            if (normalized.length === 0) {
+              skipped.push({ value: v, reason: "invalid URL" });
+              continue;
+            }
+            if (isWhitelistedUrl(normalized[0])) {
+              skipped.push({ value: v, reason: "whitelisted host" });
+              continue;
+            }
+            // appendToUrlList stores values lowercased; keep the manual set in the
+            // same canonical form so sync diffs and duplicate checks line up.
+            value = normalized[0].toLowerCase();
+          }
+          if (currentSet.has(value) || manualSet.has(value) || toAdd.includes(value)) {
+            skipped.push({ value: v, reason: "already in list" });
+            continue;
+          }
+          if (current.length + toAdd.length >= CF_LIST_MAX) {
+            skipped.push({ value: v, reason: "list is full (5,000 items)" });
+            continue;
+          }
+          toAdd.push(value);
+        }
+        if (toAdd.length > 0) {
+          if (list === "domain") await appendToList(env, toAdd);
+          else await appendToUrlList(env, toAdd);
+          const nextManual = [...manualArr];
+          for (const v of toAdd) if (!nextManual.includes(v)) nextManual.push(v);
+          const next: ManualItems =
+            list === "domain" ? { ...manual, domain: nextManual } : { ...manual, url: nextManual };
+          await saveManualItems(env, next);
+        }
+        return Response.json({ status: "ok", added: toAdd.length, skipped });
+      } catch (err) {
+        return Response.json({ status: "error", error: String(err) }, { status: 500 });
+      }
+    }
+
+    if (request.method === "POST" && url.pathname === "/api/lists/items/remove") {
+      const parsed = await parseListItemsBody(request);
+      if (!parsed) {
+        return Response.json(
+          { status: "error", error: "body must be { list: 'domain' | 'url', items: string[] } (max 1,000 items)" },
+          { status: 400 },
+        );
+      }
+      try {
+        const { list } = parsed;
+        const current = await fetchListValues(env, listIdFor(env, list));
+        const currentSet = new Set(current);
+        const manual = await loadManualItems(env);
+        const manualArr = list === "domain" ? manual.domain : manual.url;
+        const requested = [...new Set(parsed.items.map((v) => v.trim()).filter(Boolean))];
+        const inList = requested.filter((v) => currentSet.has(v));
+        if (inList.length > 0) {
+          if (list === "domain") await deleteFromList(env, inList);
+          else await deleteFromUrlList(env, inList);
+        }
+        // Requested values leave the manual set even if they were not currently in
+        // the CF list, so a later sync cannot resurrect them.
+        const requestedSet = new Set(requested);
+        const nextManualArr = manualArr.filter((v) => !requestedSet.has(v));
+        const next: ManualItems =
+          list === "domain" ? { ...manual, domain: nextManualArr } : { ...manual, url: nextManualArr };
+        await saveManualItems(env, next);
+        return Response.json({ status: "ok", removed: inList.length });
+      } catch (err) {
+        return Response.json({ status: "error", error: String(err) }, { status: 500 });
+      }
     }
 
     if (request.method === "GET" && url.pathname === "/sync/stream") {
