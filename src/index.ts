@@ -415,21 +415,20 @@ function listIdFor(env: Env, list: FeedListType): string {
 }
 
 export default {
-  // Cron trigger: daily at 08:00 UTC (configured in wrangler.jsonc)
-  async scheduled(_controller: ScheduledController, env: Env, ctx: ExecutionContext): Promise<void> {
-    ctx.waitUntil(
-      (async () => {
-        try {
-          const result = await runSync(env);
-          await persistLastSync(env, result);
-          console.log(
-            `[ti-ioc-sync] cron complete: domains +${result.domains.added}/-${result.domains.removed}=${result.domains.total} urls +${result.urls.added}/-${result.urls.removed}=${result.urls.total} (${result.elapsedMs}ms)`,
-          );
-        } catch (err) {
-          console.error(`[ti-ioc-sync] cron error:`, err);
-        }
-      })(),
-    );
+  // Cron trigger: daily at 08:00 UTC (configured in wrangler.jsonc).
+  // Await the sync directly — scheduled events get the full invocation lifetime
+  // (fetch-handler waitUntil tasks are cancelled ~30s after the response, which
+  // is far too short for a full sync).
+  async scheduled(_controller: ScheduledController, env: Env, _ctx: ExecutionContext): Promise<void> {
+    try {
+      const result = await runSync(env);
+      await persistLastSync(env, result);
+      console.log(
+        `[ti-ioc-sync] cron complete: domains +${result.domains.added}/-${result.domains.removed}=${result.domains.total} urls +${result.urls.added}/-${result.urls.removed}=${result.urls.total} (${result.elapsedMs}ms)`,
+      );
+    } catch (err) {
+      console.error(`[ti-ioc-sync] cron error:`, err);
+    }
   },
 
   async fetch(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
