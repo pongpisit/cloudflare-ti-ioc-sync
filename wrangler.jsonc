@@ -4,6 +4,7 @@
   "main": "src/index.ts",
   "compatibility_date": "2026-09-14",
   "compatibility_flags": ["nodejs_compat"],
+  "preview_urls": false,
   "triggers": {
     "crons": ["0 8 * * *"]
   },
