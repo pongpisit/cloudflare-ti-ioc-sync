@@ -10,6 +10,7 @@ import {
   fetchListValues,
   getListItems,
   getUrlListItems,
+  listGatewayLists,
 } from "./cfapi";
 import { filterCfKnownThreats } from "./intel";
 import { renderDashboard } from "./dashboard";
@@ -718,6 +719,15 @@ export default {
     if (request.method === "GET" && url.pathname === "/debug/list") {
       try {
         const raw = await debugListItems(env);
+        return Response.json({ status: "ok", raw });
+      } catch (err) {
+        return Response.json({ status: "error", error: String(err) }, { status: 500 });
+      }
+    }
+
+    if (request.method === "GET" && url.pathname === "/debug/lists") {
+      try {
+        const raw = await listGatewayLists(env);
         return Response.json({ status: "ok", raw });
       } catch (err) {
         return Response.json({ status: "error", error: String(err) }, { status: 500 });

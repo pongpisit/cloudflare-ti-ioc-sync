@@ -474,6 +474,21 @@ describe("HTTP auth gate (audit finding src/index.ts:unauth-mutating-routes)", (
     expect(res.status).toBe(401);
   });
 
+  it("GET /debug/lists requires the token and passes the CF API response through", async () => {
+    installFetchMock();
+    const env = mockEnv();
+    const denied = await worker.fetch(new Request("http://x/debug/lists"), env, ctx);
+    expect(denied.status).toBe(401);
+    const ok = await worker.fetch(
+      new Request("http://x/debug/lists", { headers: { "X-Auth-Token": "test-admin-token" } }),
+      env,
+      ctx,
+    );
+    expect(ok.status).toBe(200);
+    const data = (await ok.json()) as { status: string; raw: unknown };
+    expect(data.status).toBe("ok");
+  });
+
   it("treats a corrupt last_sync KV value as never-synced instead of throwing", async () => {
     installFetchMock();
     const env = mockEnv();

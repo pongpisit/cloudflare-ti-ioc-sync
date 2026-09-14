@@ -73,6 +73,18 @@ export async function debugListItems(env: Env): Promise<unknown> {
   return res.json();
 }
 
+/**
+ * Lists every Gateway list in the account (name, id, type, count) — used by
+ * GET /debug/lists so operators can discover existing list IDs without leaving
+ * the Worker's own credentials out of the loop.
+ */
+export async function listGatewayLists(env: Env): Promise<unknown> {
+  const res = await fetch(`${CF_BASE}/accounts/${env.CF_ACCOUNT_ID}/gateway/lists`, {
+    headers: headers(env.CF_API_TOKEN),
+  });
+  return res.json();
+}
+
 export async function appendToList(env: Env, domains: string[]): Promise<{ added: number }> {
   if (domains.length === 0) return { added: 0 };
   let added = 0;
