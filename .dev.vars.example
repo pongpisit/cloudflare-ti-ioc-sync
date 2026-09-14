@@ -4,3 +4,6 @@ CF_ACCOUNT_ID=your_cloudflare_account_id
 CF_API_TOKEN=your_api_token_with_gateway_list_and_intel_permissions
 CF_LIST_ID=your_gateway_domain_list_id
 CF_URL_LIST_ID=your_gateway_url_list_id
+# Shared secret for admin routes (POST /sync*, /api/feeds/*, /debug/*, /bootstrap*, /reset/*).
+# Generate one locally with: openssl rand -hex 32
+ADMIN_TOKEN=generate_a_long_random_secret

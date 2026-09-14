@@ -143,6 +143,50 @@ describe("loadFeedConfig", () => {
   });
 });
 
+describe("custom feed destination validation (SSRF hardening)", () => {
+  it("accepts ordinary https .txt URLs", async () => {
+    const result = await addCustomFeed(env, "https://feeds.example.org/blocklist.txt", "domain");
+    expect(result.ok).toBe(true);
+  });
+
+  it("rejects IPv4-literal destinations without saving", async () => {
+    const result = await addCustomFeed(env, "http://10.0.0.1/list.txt", "domain");
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.error).toContain("IP-literal");
+    expect((await loadFeedConfig(env)).custom).toHaveLength(0);
+  });
+
+  it("rejects IPv6-literal destinations", async () => {
+    const result = await addCustomFeed(env, "https://[::1]/list.txt", "domain");
+    expect(result.ok).toBe(false);
+  });
+
+  it("rejects localhost and local/internal hostnames", async () => {
+    expect((await addCustomFeed(env, "http://localhost/list.txt", "domain")).ok).toBe(false);
+    expect((await addCustomFeed(env, "http://intranet.local/list.txt", "domain")).ok).toBe(false);
+    expect((await addCustomFeed(env, "https://portal.internal/list.txt", "domain")).ok).toBe(false);
+  });
+
+  it("rejects URLs with embedded credentials", async () => {
+    const result = await addCustomFeed(env, "https://user:pass@example.com/list.txt", "domain");
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.error).toContain("Credentials");
+  });
+
+  it("rejects URLs longer than 2048 characters", async () => {
+    const long = `https://example.com/${"a".repeat(2100)}.txt`;
+    const result = await addCustomFeed(env, long, "domain");
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.error).toContain("too long");
+  });
+
+  it("generates collision-resistant ids (timestamp + random suffix)", async () => {
+    const result = await addCustomFeed(env, "https://example.com/list.txt", "domain");
+    expect(result.ok).toBe(true);
+    if (result.ok) expect(result.feed.id).toMatch(/^custom_[a-z0-9]+_[a-f0-9]{8}$/);
+  });
+});
+
 describe("removeCustomFeed", () => {
   it("removes only custom feeds", async () => {
     await addCustomFeed(env, "https://example.com/list.txt", "domain");

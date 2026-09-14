@@ -85,6 +85,13 @@ describe("parseUrls", () => {
   it("skips non-url lines", () => {
     expect(parseUrls("# header\nplaindomain.com")).toEqual([]);
   });
+
+  it("skips wildcard hosts (https://*.microsoft.com/ must never reach the URL list)", () => {
+    expect(parseUrls("https://*.microsoft.com/")).toEqual([]);
+    expect(parseUrls("https://evil.example.org/ok\nhttps://*.cloudflare.com/")).toEqual([
+      "https://evil.example.org/ok",
+    ]);
+  });
 });
 
 describe("parseThreatFox", () => {

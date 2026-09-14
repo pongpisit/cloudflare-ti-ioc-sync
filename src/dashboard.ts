@@ -6,7 +6,8 @@ function esc(s: string): string {
     .replace(/&/g, "&amp;")
     .replace(/</g, "&lt;")
     .replace(/>/g, "&gt;")
-    .replace(/"/g, "&quot;");
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&#39;");
 }
 
 const BUILTIN_FEED_NAMES: Record<string, string> = {
@@ -537,7 +538,7 @@ ${feedSettingsRows(cfg)}
         </select>
         <button class="btn btn-primary" onclick="addCustomFeed()">+ Add Feed</button>
         <span id="feed-status"></span>
-        <div class="feed-hint">Only <b>.txt</b> plain-text lists are accepted \u2014 one domain or URL per line, # comments allowed. Custom feeds are capped at 500 items each (max 10 feeds).</div>
+        <div class="feed-hint">Only <b>.txt</b> plain-text lists are accepted \u2014 one domain or URL per line, # comments allowed. Custom feeds are capped at 500 items each (max 10 feeds). IP-literal, localhost, and credential-bearing URLs are rejected. Admin actions require the <b>ADMIN_TOKEN</b> secret (prompted once per tab session).</div>
       </div>
     </div>
   </div>
@@ -591,7 +592,7 @@ ${feedSettingsRows(cfg)}
   Powered by <a href="https://developers.cloudflare.com/cloudflare-one/policies/gateway/" target="_blank">Cloudflare Gateway</a> &nbsp;\xB7&nbsp;
   <a href="/api/status" target="_blank">JSON API</a> &nbsp;\xB7&nbsp;
   Auto-syncs daily at 08:00 UTC &nbsp;\xB7&nbsp;
-  <a href="https://ti-ioc-sync.pongpisit.workers.dev" target="_blank">ti-ioc-sync.pongpisit.workers.dev</a>
+  <a href="https://github.com/pongpisit/cloudflare-ti-ioc-sync" target="_blank">github.com/pongpisit/cloudflare-ti-ioc-sync</a>
 </div>
 
 <script>
@@ -637,6 +638,11 @@ function openStream() {
   const btn   = document.getElementById('stream-btn');
   const blink = document.getElementById('stream-blink');
   const label = document.getElementById('stream-label');
+  const t = getAdminToken();
+  if (t === null) {
+    label.textContent = 'TOKEN REQUIRED';
+    return;
+  }
 
   wrap.style.display = 'block';
   term.innerHTML = '';
@@ -650,8 +656,17 @@ function openStream() {
 
   streamController = new AbortController();
 
-  fetch('/sync/stream', { signal: streamController.signal })
+  fetch('/sync/stream', { signal: streamController.signal, headers: { 'X-Auth-Token': t } })
     .then(res => {
+      if (res.status === 401 || res.status === 503) {
+        sessionStorage.removeItem('ti_admin_token');
+        appendLine(term, '[ERROR] Unauthorized \u2014 check the ADMIN_TOKEN secret');
+        label.textContent = 'UNAUTHORIZED';
+        blink.style.display = 'none';
+        btn.textContent = '&#9654; Live Sync Terminal';
+        streamOpen = false;
+        return;
+      }
       const reader = res.body.getReader();
       const dec    = new TextDecoder();
       let   buf    = '';
@@ -699,7 +714,7 @@ function stopStream() {
 }
 
 function appendLine(term, raw) {
-  const line = raw.replace(/</g, '&lt;').replace(/>/g, '&gt;');
+  const line = raw.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
   const span = document.createElement('span');
   span.className = 'ml ' + classifyLine(raw);
   span.innerHTML = line || '&nbsp;';
@@ -730,11 +745,13 @@ async function toggleFeed(cb, id) {
   const status = document.getElementById('feed-status');
   status.textContent = 'Saving\u2026';
   try {
-    const res = await fetch('/api/feeds/toggle', {
+    const res = await authFetch('/api/feeds/toggle', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ id: id, enabled: cb.checked })
     });
+    const authErr = handleAuthError(res);
+    if (authErr) { status.textContent = authErr; cb.checked = !cb.checked; return; }
     const data = await res.json();
     if (data.status === 'ok') {
       status.textContent = (cb.checked ? '\u2705 Enabled: ' : '\u26D4 Disabled: ') + id + ' \u2014 applies on next sync';
@@ -743,7 +760,7 @@ async function toggleFeed(cb, id) {
       cb.checked = !cb.checked;
     }
   } catch(e) {
-    status.textContent = '\u274C Network error';
+    status.textContent = e.message === 'admin token required' ? '\u26BF Admin token required' : '\u274C Network error';
     cb.checked = !cb.checked;
   }
 }
@@ -759,11 +776,13 @@ async function addCustomFeed() {
   }
   status.textContent = 'Adding\u2026';
   try {
-    const res = await fetch('/api/feeds/custom', {
+    const res = await authFetch('/api/feeds/custom', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ url: url, listType: sel.value })
     });
+    const authErr = handleAuthError(res);
+    if (authErr) { status.textContent = authErr; return; }
     const data = await res.json();
     if (data.status === 'ok') {
       location.reload();
@@ -771,18 +790,20 @@ async function addCustomFeed() {
       status.textContent = '\u274C ' + (data.error || 'Failed to add feed');
     }
   } catch(e) {
-    status.textContent = '\u274C Network error';
+    status.textContent = e.message === 'admin token required' ? '\u26BF Admin token required' : '\u274C Network error';
   }
 }
 
 async function removeCustomFeed(id) {
   if (!confirm('Remove custom feed ' + id + '?')) return;
   try {
-    const res = await fetch('/api/feeds/custom/remove', {
+    const res = await authFetch('/api/feeds/custom/remove', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ id: id })
     });
+    const authErr = handleAuthError(res);
+    if (authErr) { document.getElementById('feed-status').textContent = authErr; return; }
     const data = await res.json();
     if (data.status === 'ok') {
       location.reload();
@@ -790,7 +811,7 @@ async function removeCustomFeed(id) {
       document.getElementById('feed-status').textContent = '\u274C ' + (data.error || 'Failed to remove feed');
     }
   } catch(e) {
-    document.getElementById('feed-status').textContent = '\u274C Network error';
+    document.getElementById('feed-status').textContent = e.message === 'admin token required' ? '\u26BF Admin token required' : '\u274C Network error';
   }
 }
 </script>

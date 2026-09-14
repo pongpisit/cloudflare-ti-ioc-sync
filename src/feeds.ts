@@ -122,6 +122,9 @@ export function parseUrls(text: string): string[] {
     try {
       const u = new URL(line.includes("://") ? line : `http://${line}`);
       if (!u.hostname) continue;
+      // Wildcard hosts (e.g. https://*.microsoft.com/) are never valid feed entries:
+      // reject them rather than letting shaped values reach the Gateway list API.
+      if (u.hostname.includes("*")) continue;
       const schemeHost = `${u.protocol}//${u.host}`.toLowerCase();
       // indexOf is case-sensitive; URL parsing lowercases the host, so search case-insensitively
       const hostIdx = line.toLowerCase().indexOf(u.host);

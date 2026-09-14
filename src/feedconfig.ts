@@ -4,9 +4,12 @@ import type { Env, Feed, FeedConfig, FeedListType } from "./types";
 const FEED_CONFIG_KEY = "feed_config";
 export const MAX_CUSTOM_FEEDS = 10;
 export const CUSTOM_FEED_MAX_ITEMS = 500;
+export const MAX_CUSTOM_URL_LENGTH = 2048;
 
 // Only plain-text .txt lists are accepted (optionally followed by a query string / fragment)
 const TXT_URL_RE = /^https?:\/\/[^\s?#]+\.txt([?#]\S*)?$/i;
+// IPv4 literals and IPv6 literals (bracketed or bare in hostname)
+const IPV4_RE = /^\d{1,3}(\.\d{1,3}){3}$/;
 
 function isValidListType(v: unknown): v is FeedListType {
   return v === "domain" || v === "url";
@@ -48,6 +51,36 @@ export function isValidCustomFeedUrl(url: string): boolean {
   return TXT_URL_RE.test(url);
 }
 
+/**
+ * Full destination validation for a custom feed URL: shape, size, and host safety.
+ * Returns null when acceptable, or a human-readable rejection reason.
+ */
+export function customFeedUrlError(url: string): string | null {
+  if (url.length > MAX_CUSTOM_URL_LENGTH) {
+    return `URL too long (max ${MAX_CUSTOM_URL_LENGTH} characters)`;
+  }
+  if (!TXT_URL_RE.test(url)) {
+    return "Only .txt plain-text list URLs are accepted (https://…/name.txt)";
+  }
+  let u: URL;
+  try {
+    u = new URL(url);
+  } catch {
+    return "URL does not parse as a valid http(s) URL";
+  }
+  if (u.username !== "" || u.password !== "") {
+    return "Credentials embedded in the URL are not allowed";
+  }
+  const host = u.hostname.toLowerCase();
+  if (host.includes(":") || IPV4_RE.test(host)) {
+    return "IP-literal hosts are not allowed";
+  }
+  if (host === "localhost" || host.endsWith(".localhost") || host.endsWith(".local") || host.endsWith(".internal")) {
+    return "Local/internal hostnames are not allowed";
+  }
+  return null;
+}
+
 /** All feeds (built-in + custom) with their enabled state — used by API and dashboard. */
 export async function getFeedsWithState(
   env: Env,
@@ -85,8 +118,9 @@ export async function addCustomFeed(
   url: string,
   listType: FeedListType,
 ): Promise<{ ok: true; feed: Feed } | { ok: false; error: string }> {
-  if (!isValidCustomFeedUrl(url)) {
-    return { ok: false, error: "Only .txt plain-text list URLs are accepted (https://…/name.txt)" };
+  const destError = customFeedUrlError(url);
+  if (destError) {
+    return { ok: false, error: destError };
   }
   if (!isValidListType(listType)) {
     return { ok: false, error: "listType must be 'domain' or 'url'" };
@@ -99,14 +133,10 @@ export async function addCustomFeed(
   if (cfg.custom.length >= MAX_CUSTOM_FEEDS) {
     return { ok: false, error: `Custom feed limit reached (${MAX_CUSTOM_FEEDS})` };
   }
-  let host = url;
-  try {
-    host = new URL(url).hostname;
-  } catch {
-    // validated above; keep url as name fallback
-  }
+  const host = new URL(url).hostname;
   const feed: Feed = {
-    id: `custom_${Date.now().toString(36)}`,
+    // Timestamp + random suffix so same-millisecond registrations cannot collide
+    id: `custom_${Date.now().toString(36)}_${crypto.randomUUID().split("-")[0]}`,
     name: `${host} (custom .txt)`,
     url,
     format: "plain",

@@ -36,6 +36,13 @@ describe("renderDashboard", () => {
     expect(html).toContain("&lt;script&gt;alert(&quot;xss&quot;)&lt;/script&gt;");
   });
 
+  it("escapes single quotes in rendered error strings", () => {
+    const nasty: SyncResult = { ...sample, feedErrors: ["it's a 'quoted' error"] };
+    const html = renderDashboard(nasty);
+    expect(html).toContain("it&#39;s a &#39;quoted&#39; error");
+    expect(html).not.toContain("it's a 'quoted' error</div>");
+  });
+
   it("shows the actual daily cron schedule", () => {
     const html = renderDashboard(sample);
     expect(html).toContain("08:00 UTC");

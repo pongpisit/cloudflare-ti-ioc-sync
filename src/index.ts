@@ -23,9 +23,17 @@ import {
 import type { Env, Feed, FetchFeedResult, FeedListType, SyncLogger, SyncResult } from "./types";
 
 const CF_LIST_MAX = 5_000;
-const USER_AGENT = "Mozilla/5.0 (compatible; CF-TI-Sync/1.0; +https://ti-ioc-sync.pongpisit.workers.dev)";
+// Feed bodies must survive between syncs so the stale-cache fallback can fire
+// when a feed fails; 48 h comfortably covers the 24 h cron cadence.
+const FEED_CACHE_TTL = 172_800;
+// Upper bound on a feed response body before it is parsed or cached.
+const MAX_FEED_BYTES = 8 * 1024 * 1024;
+const USER_AGENT =
+  "Mozilla/5.0 (compatible; CF-TI-Sync/1.0; +https://github.com/pongpisit/cloudflare-ti-ioc-sync)";
 
-// Exact-match whitelist of high-trust domains excluded from the domain list
+// Exact-match whitelist of high-trust domains excluded from the domain list.
+// For URL-bucket items the whitelist is applied to the URL's hostname, including
+// subdomains, so URL feeds cannot push high-trust hosts onto the URL block list.
 const WHITELIST = new Set([
   "cloudflare.com",
   "microsoft.com",
@@ -37,8 +45,69 @@ const WHITELIST = new Set([
   "fastly.net",
 ]);
 
+function isWhitelistedUrl(u: string): boolean {
+  try {
+    const host = new URL(u).hostname.toLowerCase();
+    for (const d of WHITELIST) {
+      if (host === d || host.endsWith(`.${d}`)) return true;
+    }
+  } catch {
+    // Not a parseable URL — let the existing diff handling deal with it.
+  }
+  return false;
+}
+
+/**
+ * Constant-time string comparison for shared-secret checks. The length check leaks
+ * only the token length, which is standard practice for bearer secrets.
+ */
+function timingSafeEqual(a: string, b: string): boolean {
+  const ea = new TextEncoder().encode(a);
+  const eb = new TextEncoder().encode(b);
+  if (ea.byteLength !== eb.byteLength) return false;
+  let diff = 0;
+  for (let i = 0; i < ea.byteLength; i++) diff |= ea[i] ^ eb[i];
+  return diff === 0;
+}
+
+/** Routes that stay readable without a token: the dashboard and its JSON status. */
+function isPublicRoute(method: string, pathname: string): boolean {
+  return method === "GET" && (pathname === "/" || pathname === "/api/status");
+}
+
+function unauthorized(): Response {
+  return Response.json(
+    { status: "error", error: "unauthorized \u2014 X-Auth-Token header required" },
+    { status: 401, headers: { "WWW-Authenticate": "Bearer" } },
+  );
+}
+
 function capItems(feed: Feed, items: string[]): string[] {
   return feed.maxDomains ? items.slice(0, feed.maxDomains) : items;
+}
+
+/** Reads a response body up to maxBytes, failing the fetch if the limit is exceeded. */
+async function readBodyCapped(res: Response, maxBytes: number): Promise<string> {
+  const reader = res.body!.getReader();
+  const chunks: Uint8Array[] = [];
+  let total = 0;
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    total += value.byteLength;
+    if (total > maxBytes) {
+      await reader.cancel();
+      throw new Error(`feed response exceeds ${maxBytes} bytes`);
+    }
+    chunks.push(value);
+  }
+  const merged = new Uint8Array(total);
+  let offset = 0;
+  for (const c of chunks) {
+    merged.set(c, offset);
+    offset += c.byteLength;
+  }
+  return new TextDecoder().decode(merged);
 }
 
 async function fetchFeed(feed: Feed, cacheKV: KVNamespace): Promise<FetchFeedResult> {
@@ -54,17 +123,17 @@ async function fetchFeed(feed: Feed, cacheKV: KVNamespace): Promise<FetchFeedRes
         signal: AbortSignal.timeout(10_000),
       });
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
-      rawJson = await res.json();
+      rawJson = await readBodyCapped(res, MAX_FEED_BYTES).then((t) => JSON.parse(t));
     } else {
       const res = await fetch(feed.url, {
         headers: { "User-Agent": USER_AGENT },
         signal: AbortSignal.timeout(10_000),
       });
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
-      rawText = await res.text();
+      rawText = await readBodyCapped(res, MAX_FEED_BYTES);
     }
     const toCache = rawJson ? JSON.stringify(rawJson) : rawText;
-    await cacheKV.put(cacheKey, toCache, { expirationTtl: 300 });
+    await cacheKV.put(cacheKey, toCache, { expirationTtl: FEED_CACHE_TTL });
     return { feedId: feed.id, items: capItems(feed, parseFeed(feed, rawText, rawJson)), listType: feed.listType };
   } catch (err) {
     const cached = await cacheKV.get(cacheKey);
@@ -98,8 +167,13 @@ const LINE = "\u2550".repeat(60);
 /**
  * Core sync pipeline. When `log` is provided (live /sync/stream terminal), progress
  * is streamed line-by-line; the cron/manual paths run silently and store `last_sync`.
+ *
+ * Removals are fail-closed: items are only removed from the Gateway lists when every
+ * active feed returned content this run, at least one feed is active, and neither bucket
+ * was truncated by the list cap. A feed outage, an empty response, or a disabled feed
+ * must never unblock previously-synced IOCs.
  */
-async function runSync(env: Env, log?: SyncLogger): Promise<SyncResult> {
+export async function runSync(env: Env, log?: SyncLogger): Promise<SyncResult> {
   const startMs = Date.now();
   const write = log ?? (() => {});
   const feedErrors: string[] = [];
@@ -140,12 +214,24 @@ async function runSync(env: Env, log?: SyncLogger): Promise<SyncResult> {
   const freshDomains: string[] = [];
   const freshUrls: string[] = [];
   let whitelistHits = 0;
+  // Any active feed that yielded zero items (hard fetch failure with no usable stale
+  // cache, or an empty/comment-only 200 body) disqualifies removals this run.
+  let emptyFeeds = 0;
   for (const { feedId, items, listType, error } of results) {
     feedStats[feedId] = items.length;
     if (error) feedErrors.push(`${feedId}: ${error}`);
-    if (error && items.length === 0) continue;
+    if (items.length === 0) {
+      emptyFeeds++;
+      continue;
+    }
     if (listType === "url") {
-      freshUrls.push(...items);
+      for (const u of items) {
+        if (isWhitelistedUrl(u)) {
+          whitelistHits++;
+          continue;
+        }
+        freshUrls.push(u);
+      }
     } else {
       for (const d of items) {
         if (WHITELIST.has(d)) {
@@ -160,6 +246,8 @@ async function runSync(env: Env, log?: SyncLogger): Promise<SyncResult> {
   const freshDomainCapped = [...freshDomainSet].slice(0, CF_LIST_MAX);
   const freshUrlSet = new Set(freshUrls.slice(0, CF_LIST_MAX * 2));
   const freshUrlCapped = [...freshUrlSet].slice(0, CF_LIST_MAX);
+  const domainCapTruncated = freshDomainSet.size > freshDomainCapped.length;
+  const urlCapTruncated = freshUrlSet.size > freshUrlCapped.length;
 
   if (log) {
     write(`[${clock()}] STEP 2 \u2014 Partitioning into domain / URL buckets`);
@@ -183,14 +271,33 @@ async function runSync(env: Env, log?: SyncLogger): Promise<SyncResult> {
     write(`[${clock()}] STEP 4 \u2014 Computing diff (new vs stale)`);
   }
 
+  // Fail-closed removal authorization: a feed outage, an empty feed response, a fully
+  // disabled feed set, or cap truncation must never turn into unblocking.
+  const removalsAuthorized =
+    feeds.length > 0 && emptyFeeds === 0 && !domainCapTruncated && !urlCapTruncated;
+  if (!removalsAuthorized) {
+    const reasons: string[] = [];
+    if (feeds.length === 0) reasons.push("no active feeds");
+    if (emptyFeeds > 0) reasons.push(`${emptyFeeds} feed(s) returned no items`);
+    if (domainCapTruncated) reasons.push("domain bucket exceeded list cap");
+    if (urlCapTruncated) reasons.push("URL bucket exceeded list cap");
+    const msg = `removals skipped (fail-closed): ${reasons.join(", ")}`;
+    feedErrors.push(msg);
+    write(`[${clock()}]   \u26A0 ${msg}`);
+  }
+
   // Diff — URLs are compared after percent-decoding so encoded duplicates are caught
   const freshDomainSetCapped = new Set(freshDomainCapped);
   const rawDomainsToAdd = freshDomainCapped.filter((d) => !currentDomainSet.has(d));
-  const domainsToRemove = [...currentDomainSet].filter((d) => !freshDomainSetCapped.has(d));
+  const domainsToRemove = removalsAuthorized
+    ? [...currentDomainSet].filter((d) => !freshDomainSetCapped.has(d))
+    : [];
   const freshUrlNorm = new Set(freshUrlCapped.map(tryDecode));
   const currentUrlNorm = new Map([...currentUrlSet].map((u) => [tryDecode(u), u]));
   const urlsToAdd = freshUrlCapped.filter((u) => !currentUrlNorm.has(tryDecode(u)));
-  const urlsToRemove = [...currentUrlSet].filter((u) => !freshUrlNorm.has(tryDecode(u)));
+  const urlsToRemove = removalsAuthorized
+    ? [...currentUrlSet].filter((u) => !freshUrlNorm.has(tryDecode(u)))
+    : [];
 
   if (log) {
     write(`[${clock()}]   Domains \u2014 to add: ${rawDomainsToAdd.length.toLocaleString()}  to remove: ${domainsToRemove.length.toLocaleString()}`);
@@ -282,6 +389,16 @@ async function persistLastSync(env: Env, result: SyncResult): Promise<void> {
   await env.IOC_CACHE.put("last_sync", JSON.stringify(result), { expirationTtl: 86400 });
 }
 
+/** Parses KV-stored last_sync defensively; a corrupt value renders as "never synced". */
+function parseSyncResult(raw: string | null): SyncResult | null {
+  if (!raw) return null;
+  try {
+    return JSON.parse(raw) as SyncResult;
+  } catch {
+    return null;
+  }
+}
+
 async function readJson<T>(request: Request): Promise<T | null> {
   try {
     return (await request.json()) as T;
@@ -311,9 +428,25 @@ export default {
   async fetch(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
     const url = new URL(request.url);
 
+    // Auth gate: only the dashboard and its status JSON are public. Every mutating,
+    // debug, and streaming route requires the ADMIN_TOKEN secret via the X-Auth-Token
+    // header (fail-closed when the secret is not configured).
+    if (!isPublicRoute(request.method, url.pathname)) {
+      if (!env.ADMIN_TOKEN) {
+        return Response.json(
+          {
+            status: "error",
+            error: "ADMIN_TOKEN secret is not configured \u2014 admin endpoints are disabled (fail-closed)",
+          },
+          { status: 503 },
+        );
+      }
+      const provided = request.headers.get("X-Auth-Token") ?? "";
+      if (!provided || !timingSafeEqual(provided, env.ADMIN_TOKEN)) return unauthorized();
+    }
+
     if (request.method === "GET" && url.pathname === "/") {
-      const lastSyncRaw = await env.IOC_CACHE.get("last_sync");
-      const lastSync = lastSyncRaw ? (JSON.parse(lastSyncRaw) as SyncResult) : null;
+      const lastSync = parseSyncResult(await env.IOC_CACHE.get("last_sync"));
       const config = await loadFeedConfig(env);
       return new Response(renderDashboard(lastSync, config), {
         headers: { "Content-Type": "text/html; charset=utf-8" },
@@ -321,13 +454,13 @@ export default {
     }
 
     if (request.method === "GET" && url.pathname === "/api/status") {
-      const lastSyncRaw = await env.IOC_CACHE.get("last_sync");
+      const lastSync = parseSyncResult(await env.IOC_CACHE.get("last_sync"));
       const activeFeeds = await getActiveFeeds(env);
       return Response.json({
         status: "ok",
         worker: "ti-ioc-sync",
         feeds: activeFeeds.map((f) => ({ id: f.id, name: f.name, listType: f.listType })),
-        last_sync: lastSyncRaw ? JSON.parse(lastSyncRaw) : null,
+        last_sync: lastSync,
       });
     }
 
@@ -420,7 +553,7 @@ export default {
           headers: { "User-Agent": "Mozilla/5.0 (compatible; CF-TI-Sync/1.0)" },
           signal: AbortSignal.timeout(10_000),
         });
-        const text = await res.text();
+        const text = await readBodyCapped(res, MAX_FEED_BYTES);
         const lines = text.split("\n").filter((l) => l.trim() && !l.startsWith("#"));
         return Response.json({ status: res.status, totalLines: lines.length, sample: lines.slice(0, 5) });
       } catch (err) {

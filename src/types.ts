@@ -3,6 +3,12 @@ export interface Env {
   CF_API_TOKEN: string;
   CF_LIST_ID: string;
   CF_URL_LIST_ID: string;
+  /**
+   * Shared secret required (via the X-Auth-Token header) on every route except
+   * GET / and GET /api/status. Set with: wrangler secret put ADMIN_TOKEN.
+   * When unset, all protected routes fail closed with 503.
+   */
+  ADMIN_TOKEN: string;
   IOC_CACHE: KVNamespace;
 }
 
