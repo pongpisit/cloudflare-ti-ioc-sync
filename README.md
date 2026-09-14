@@ -31,6 +31,10 @@ Once the lists are wired into Gateway DNS/HTTP policies (`dns.fqdn in $IOC-Domai
 ```
 
 - **Cron:** daily at `08:00 UTC` (`triggers.crons` in `wrangler.jsonc`)
+- **Feed management:** enable/disable any of the 9 built-in feeds and add your own
+  `.txt` feed URLs from the dashboard's *Feed Settings* section (or the `/api/feeds/*`
+  endpoints). The configuration is stored in KV (`feed_config` key) and applies on the
+  next sync run
 - **Caching:** raw feed bodies cached in KV (`IOC_CACHE`, 5 min TTL) so a failed fetch
   falls back to stale data; Intel verdicts cached 6 h to spare API quota
 - **Intel dedup:** new domains are checked against the Cloudflare Intel API; those already
@@ -41,8 +45,12 @@ Once the lists are wired into Gateway DNS/HTTP policies (`dns.fqdn in $IOC-Domai
 
 | Method | Path | Description |
 | --- | --- | --- |
-| GET | `/` | Dashboard (last sync stats, feed health, live terminal) |
-| GET | `/api/status` | JSON status + feed list |
+| GET | `/` | Dashboard (stats, feed health, live terminal, feed settings) |
+| GET | `/api/status` | JSON status + active feed list |
+| GET | `/api/feeds` | All feeds with enabled/custom state |
+| POST | `/api/feeds/toggle` | Enable/disable a feed — body `{ "id": "oisd_big", "enabled": false }` |
+| POST | `/api/feeds/custom` | Add a custom feed — body `{ "url": "https://…/list.txt", "listType": "domain" }`. **Only `.txt` plain-text URLs are accepted**; capped at 500 items per feed, max 10 custom feeds |
+| POST | `/api/feeds/custom/remove` | Remove a custom feed — body `{ "id": "custom_…" }` |
 | GET | `/sync/stream` | Live streaming log of a full sync run |
 | POST | `/sync` | Trigger sync in background |
 | POST | `/sync/run` | Run sync inline, returns the result JSON |

@@ -42,3 +42,45 @@ describe("renderDashboard", () => {
     expect(html).not.toContain("every 15 min");
   });
 });
+
+describe("renderDashboard feed settings", () => {
+  it("renders a settings section with all built-in feeds", () => {
+    const html = renderDashboard(sample);
+    expect(html).toContain("Feed Settings");
+    expect(html).toContain('toggleFeed(this, \'urlhaus_urls\')');
+    expect(html).toContain('toggleFeed(this, \'hagezi_threat\')');
+  });
+
+  it("reflects disabled feeds via unchecked boxes", () => {
+    const html = renderDashboard(sample, { disabled: ["oisd_big"], custom: [] });
+    const checkboxArea = html.slice(html.indexOf("Feed Settings"), html.indexOf('id="custom-url"'));
+    const checked = (checkboxArea.match(/type="checkbox" checked/g) ?? []).length;
+    const total = (checkboxArea.match(/type="checkbox"/g) ?? []).length;
+    expect(total).toBe(9);
+    expect(checked).toBe(8);
+  });
+
+  it("renders custom feeds with remove buttons", () => {
+    const html = renderDashboard(sample, {
+      disabled: [],
+      custom: [
+        {
+          id: "custom_abc",
+          name: "example.com (custom .txt)",
+          url: "https://example.com/list.txt",
+          format: "plain",
+          listType: "domain",
+          maxDomains: 500,
+        },
+      ],
+    });
+    expect(html).toContain("custom_abc");
+    expect(html).toContain("removeCustomFeed('custom_abc')");
+    expect(html).toContain("custom-tag");
+  });
+
+  it("shows the .txt-only hint", () => {
+    const html = renderDashboard(sample);
+    expect(html).toContain("Only <b>.txt</b> plain-text lists are accepted");
+  });
+});

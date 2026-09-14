@@ -1,4 +1,4 @@
-import { FEEDS, parseFeed } from "./feeds";
+import { parseFeed } from "./feeds";
 import {
   appendToList,
   appendToUrlList,
@@ -12,7 +12,15 @@ import {
 } from "./cfapi";
 import { filterCfKnownThreats } from "./intel";
 import { renderDashboard } from "./dashboard";
-import type { Env, Feed, FetchFeedResult, SyncLogger, SyncResult } from "./types";
+import {
+  addCustomFeed,
+  getActiveFeeds,
+  getFeedsWithState,
+  loadFeedConfig,
+  removeCustomFeed,
+  toggleFeed,
+} from "./feedconfig";
+import type { Env, Feed, FetchFeedResult, FeedListType, SyncLogger, SyncResult } from "./types";
 
 const CF_LIST_MAX = 5_000;
 const USER_AGENT = "Mozilla/5.0 (compatible; CF-TI-Sync/1.0; +https://ti-ioc-sync.pongpisit.workers.dev)";
@@ -96,18 +104,19 @@ async function runSync(env: Env, log?: SyncLogger): Promise<SyncResult> {
   const write = log ?? (() => {});
   const feedErrors: string[] = [];
   const feedStats: Record<string, number> = {};
+  const feeds = await getActiveFeeds(env);
 
   if (log) {
     write(`[${clock()}] ${LINE}`);
     write(`[${clock()}]  Cloudflare TI IOC Sync \u2014 live progress log`);
     write(`[${clock()}] ${LINE}`);
     write(`[${clock()}]`);
-    write(`[${clock()}] STEP 1 \u2014 Fetching ${FEEDS.length} OSINT feeds in parallel`);
+    write(`[${clock()}] STEP 1 \u2014 Fetching ${feeds.length} OSINT feeds in parallel`);
     write(`[${clock()}]`);
   }
 
   const results = await Promise.all(
-    FEEDS.map(async (feed) => {
+    feeds.map(async (feed) => {
       write(`[${clock()}]   \u2197 ${feed.id}  ${feed.url}`);
       const start = Date.now();
       const result = await fetchFeed(feed, env.IOC_CACHE);
@@ -273,6 +282,14 @@ async function persistLastSync(env: Env, result: SyncResult): Promise<void> {
   await env.IOC_CACHE.put("last_sync", JSON.stringify(result), { expirationTtl: 86400 });
 }
 
+async function readJson<T>(request: Request): Promise<T | null> {
+  try {
+    return (await request.json()) as T;
+  } catch {
+    return null;
+  }
+}
+
 export default {
   // Cron trigger: daily at 08:00 UTC (configured in wrangler.jsonc)
   async scheduled(_controller: ScheduledController, env: Env, ctx: ExecutionContext): Promise<void> {
@@ -297,19 +314,56 @@ export default {
     if (request.method === "GET" && url.pathname === "/") {
       const lastSyncRaw = await env.IOC_CACHE.get("last_sync");
       const lastSync = lastSyncRaw ? (JSON.parse(lastSyncRaw) as SyncResult) : null;
-      return new Response(renderDashboard(lastSync), {
+      const config = await loadFeedConfig(env);
+      return new Response(renderDashboard(lastSync, config), {
         headers: { "Content-Type": "text/html; charset=utf-8" },
       });
     }
 
     if (request.method === "GET" && url.pathname === "/api/status") {
       const lastSyncRaw = await env.IOC_CACHE.get("last_sync");
+      const activeFeeds = await getActiveFeeds(env);
       return Response.json({
         status: "ok",
         worker: "ti-ioc-sync",
-        feeds: FEEDS.map((f) => ({ id: f.id, name: f.name, listType: f.listType })),
+        feeds: activeFeeds.map((f) => ({ id: f.id, name: f.name, listType: f.listType })),
         last_sync: lastSyncRaw ? JSON.parse(lastSyncRaw) : null,
       });
+    }
+
+    if (request.method === "GET" && url.pathname === "/api/feeds") {
+      const feeds = await getFeedsWithState(env);
+      return Response.json({ status: "ok", feeds });
+    }
+
+    if (request.method === "POST" && url.pathname === "/api/feeds/toggle") {
+      const body = await readJson<{ id?: string; enabled?: boolean }>(request);
+      if (!body || typeof body.id !== "string" || !body.id || typeof body.enabled !== "boolean") {
+        return Response.json({ status: "error", error: "body must be { id: string, enabled: boolean }" }, { status: 400 });
+      }
+      const updated = await toggleFeed(env, body.id, body.enabled);
+      if (!updated) return Response.json({ status: "error", error: `unknown feed id: ${body.id}` }, { status: 404 });
+      return Response.json({ status: "ok", id: body.id, enabled: body.enabled });
+    }
+
+    if (request.method === "POST" && url.pathname === "/api/feeds/custom") {
+      const body = await readJson<{ url?: string; listType?: string }>(request);
+      if (!body || typeof body.url !== "string" || !body.url.trim()) {
+        return Response.json({ status: "error", error: "body must be { url: string, listType: 'domain' | 'url' }" }, { status: 400 });
+      }
+      const result = await addCustomFeed(env, body.url.trim(), body.listType as FeedListType);
+      if (!result.ok) return Response.json({ status: "error", error: result.error }, { status: 400 });
+      return Response.json({ status: "ok", feed: result.feed });
+    }
+
+    if (request.method === "POST" && url.pathname === "/api/feeds/custom/remove") {
+      const body = await readJson<{ id?: string }>(request);
+      if (!body || typeof body.id !== "string" || !body.id) {
+        return Response.json({ status: "error", error: "body must be { id: string }" }, { status: 400 });
+      }
+      const removed = await removeCustomFeed(env, body.id);
+      if (!removed) return Response.json({ status: "error", error: `unknown custom feed id: ${body.id}` }, { status: 404 });
+      return Response.json({ status: "ok", id: body.id });
     }
 
     if (request.method === "GET" && url.pathname === "/sync/stream") {
@@ -358,7 +412,8 @@ export default {
 
     if (request.method === "GET" && url.pathname === "/debug/feed") {
       const feedId = url.searchParams.get("id");
-      const feed = FEEDS.find((f) => f.id === feedId);
+      const allFeeds = await getFeedsWithState(env);
+      const feed = allFeeds.find((f) => f.id === feedId);
       if (!feed) return Response.json({ error: `unknown feed id: ${feedId}` }, { status: 400 });
       try {
         const res = await fetch(feed.url, {

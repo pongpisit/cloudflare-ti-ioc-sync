@@ -1,4 +1,5 @@
-import type { SyncResult } from "./types";
+import { FEEDS } from "./feeds";
+import type { FeedConfig, SyncResult } from "./types";
 
 function esc(s: string): string {
   return s
@@ -8,29 +9,64 @@ function esc(s: string): string {
     .replace(/"/g, "&quot;");
 }
 
-export function renderDashboard(lastSync: SyncResult | null): string {
+const BUILTIN_FEED_NAMES: Record<string, string> = {
+  urlhaus_urls: "Abuse.ch URLhaus",
+  openphish_urls: "OpenPhish",
+  vxvault_urls: "VXVault",
+  threatfox_domains: "Abuse.ch ThreatFox",
+  certpl_phishing: "CERT.PL Phishing",
+  dshield_domains: "DShield / maltrail",
+  malwaredomains: "URLhaus Domains",
+  oisd_big: "OISD Big",
+  hagezi_threat: "Hagezi TIF",
+};
+
+const BUILTIN_DOMAIN_FEED_IDS = [
+  "threatfox_domains",
+  "certpl_phishing",
+  "dshield_domains",
+  "malwaredomains",
+  "oisd_big",
+  "hagezi_threat",
+];
+
+const BUILTIN_URL_FEED_IDS = ["urlhaus_urls", "openphish_urls", "vxvault_urls"];
+
+function feedSettingsRows(cfg: FeedConfig): string {
+  const all = [
+    ...FEEDS.map((f) => ({ ...f, custom: false })),
+    ...cfg.custom.map((f) => ({ ...f, custom: true })),
+  ];
+  return all
+    .map((f) => {
+      const enabled = !cfg.disabled.includes(f.id);
+      return `          <tr>
+            <td><input type="checkbox" ${enabled ? "checked" : ""} onchange="toggleFeed(this, '${f.id}')"/></td>
+            <td><span class="badge badge-${f.listType}">${f.listType.toUpperCase()}</span></td>
+            <td>${esc(f.name)}${f.custom ? '<span class="custom-tag">custom</span>' : ""}</td>
+            <td>${f.listType === "url" ? "IOC-URLs" : "IOC-Domains"}</td>
+            <td class="settings-actions">${f.custom ? `<button class="btn-remove" onclick="removeCustomFeed('${f.id}')">\u2715 Remove</button>` : ""}</td>
+          </tr>`;
+    })
+    .join("\n");
+}
+
+export function renderDashboard(lastSync: SyncResult | null, cfg: FeedConfig = { disabled: [], custom: [] }): string {
   const ts = lastSync
     ? new Date(lastSync.ts).toLocaleString("en-GB", { timeZone: "Asia/Bangkok", hour12: false })
     : "Never";
   const elapsed = lastSync ? `${(lastSync.elapsedMs / 1e3).toFixed(1)}s` : "\u2014";
-  const domainFeeds = Object.entries(lastSync?.feedStats ?? {}).filter(([id]) =>
-    ["threatfox_domains", "certpl_phishing", "dshield_domains", "malwaredomains", "oisd_big", "hagezi_threat"].includes(
-      id,
-    ),
+  const customDomainIds = cfg.custom.filter((f) => f.listType === "domain").map((f) => f.id);
+  const customUrlIds = cfg.custom.filter((f) => f.listType === "url").map((f) => f.id);
+  const domainFeeds = Object.entries(lastSync?.feedStats ?? {}).filter(
+    ([id]) => BUILTIN_DOMAIN_FEED_IDS.includes(id) || customDomainIds.includes(id),
   );
-  const urlFeeds = Object.entries(lastSync?.feedStats ?? {}).filter(([id]) =>
-    ["urlhaus_urls", "openphish_urls", "vxvault_urls"].includes(id),
+  const urlFeeds = Object.entries(lastSync?.feedStats ?? {}).filter(
+    ([id]) => BUILTIN_URL_FEED_IDS.includes(id) || customUrlIds.includes(id),
   );
   const feedNames: Record<string, string> = {
-    urlhaus_urls: "Abuse.ch URLhaus",
-    openphish_urls: "OpenPhish",
-    vxvault_urls: "VXVault",
-    threatfox_domains: "Abuse.ch ThreatFox",
-    certpl_phishing: "CERT.PL Phishing",
-    dshield_domains: "DShield / maltrail",
-    malwaredomains: "URLhaus Domains",
-    oisd_big: "OISD Big",
-    hagezi_threat: "Hagezi TIF",
+    ...BUILTIN_FEED_NAMES,
+    ...Object.fromEntries(cfg.custom.map((f) => [f.id, f.name])),
   };
   function feedRows(feeds: [string, number][], type: string): string {
     if (!feeds.length) return '<tr><td colspan="3" class="empty">No data yet \u2014 run a sync</td></tr>';
@@ -293,6 +329,35 @@ export function renderDashboard(lastSync: SyncResult | null): string {
       color: #00ff41;
     }
 
+    /* \u2500\u2500 Feed settings \u2500\u2500 */
+    td input[type=checkbox] { width:16px; height:16px; accent-color:#f6821f; cursor:pointer; }
+    .custom-tag {
+      font-size:9px; font-weight:700; letter-spacing:.06em; text-transform:uppercase;
+      background:rgba(139,92,246,.2); color:#a78bfa; border:1px solid rgba(139,92,246,.35);
+      border-radius:4px; padding:1px 6px; margin-left:8px; vertical-align:middle;
+    }
+    .btn-remove {
+      background:rgba(239,68,68,.12); color:#f87171; border:1px solid rgba(239,68,68,.35);
+      border-radius:6px; padding:4px 10px; font-size:11px; cursor:pointer;
+    }
+    .btn-remove:hover { background:rgba(239,68,68,.25); }
+    td.settings-actions { text-align: right; }
+    .custom-add {
+      display:flex; gap:10px; align-items:center; flex-wrap:wrap;
+      padding:14px 16px; border-top:1px solid #1f2937;
+    }
+    .custom-add input[type=text] {
+      flex:1; min-width:260px; background:#0a0e1a; border:1px solid #374151; border-radius:8px;
+      color:#e2e8f0; padding:10px 12px; font-size:13px; font-family:monospace;
+    }
+    .custom-add input[type=text]:focus { outline:none; border-color:#f6821f; }
+    .custom-add select {
+      background:#0a0e1a; border:1px solid #374151; border-radius:8px;
+      color:#e2e8f0; padding:10px 12px; font-size:13px;
+    }
+    #feed-status { font-size:12px; color:#9ca3af; }
+    .feed-hint { width:100%; font-size:11px; color:#6b7280; }
+
     /* \u2500\u2500 Footer \u2500\u2500 */
     .footer {
       text-align: center; margin-top: 48px;
@@ -381,7 +446,7 @@ export function renderDashboard(lastSync: SyncResult | null): string {
         <div class="flow-step">
           <div class="flow-icon orange">\u{1F310}</div>
           <div class="flow-name">OSINT Feeds</div>
-          <div class="flow-desc">9 feeds fetched daily at 08:00 UTC via cron</div>
+          <div class="flow-desc">Feeds fetched daily at 08:00 UTC via cron</div>
         </div>
         <div class="flow-arrow">\u203A</div>
         <div class="flow-step">
@@ -450,6 +515,29 @@ export function renderDashboard(lastSync: SyncResult | null): string {
         <div style="padding:8px 16px;font-size:11px;color:#6b7280;border-top:1px solid #1f2937">
           +${lastSync?.domains.added ?? 0} added &nbsp;\xB7&nbsp; -${lastSync?.domains.removed ?? 0} removed &nbsp;\xB7&nbsp; ${lastSync?.domains.intelSkipped ?? 0} skipped (CF Intel)
         </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Feed settings -->
+  <div class="section">
+    <div class="section-title">Feed Settings \u2014 Enable / Disable / Custom Feeds</div>
+    <div class="table-wrap">
+      <table>
+        <thead><tr><th>Enabled</th><th>Type</th><th>Feed</th><th>List</th><th></th></tr></thead>
+        <tbody>
+${feedSettingsRows(cfg)}
+        </tbody>
+      </table>
+      <div class="custom-add">
+        <input type="text" id="custom-url" placeholder="https://example.com/blocklist.txt" spellcheck="false"/>
+        <select id="custom-type">
+          <option value="domain">Domain list</option>
+          <option value="url">URL list</option>
+        </select>
+        <button class="btn btn-primary" onclick="addCustomFeed()">+ Add Feed</button>
+        <span id="feed-status"></span>
+        <div class="feed-hint">Only <b>.txt</b> plain-text lists are accepted \u2014 one domain or URL per line, # comments allowed. Custom feeds are capped at 500 items each (max 10 feeds).</div>
       </div>
     </div>
   </div>
@@ -633,6 +721,77 @@ function classifyLine(line) {
   if (line.includes('\u2197') || line.includes('\u2713') || line.includes('items')) return 'ml-feed';
   if (!line.trim())                    return 'ml-dim';
   return '';
+}
+
+// \u2500\u2500 Feed settings \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500
+const TXT_URL_RE = /^https?:\\/\\/[^\\s?#]+\\.txt([?#]\\S*)?$/i;
+
+async function toggleFeed(cb, id) {
+  const status = document.getElementById('feed-status');
+  status.textContent = 'Saving\u2026';
+  try {
+    const res = await fetch('/api/feeds/toggle', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ id: id, enabled: cb.checked })
+    });
+    const data = await res.json();
+    if (data.status === 'ok') {
+      status.textContent = (cb.checked ? '\u2705 Enabled: ' : '\u26D4 Disabled: ') + id + ' \u2014 applies on next sync';
+    } else {
+      status.textContent = '\u274C ' + (data.error || 'Failed to update feed');
+      cb.checked = !cb.checked;
+    }
+  } catch(e) {
+    status.textContent = '\u274C Network error';
+    cb.checked = !cb.checked;
+  }
+}
+
+async function addCustomFeed() {
+  const input = document.getElementById('custom-url');
+  const sel = document.getElementById('custom-type');
+  const status = document.getElementById('feed-status');
+  const url = input.value.trim();
+  if (!TXT_URL_RE.test(url)) {
+    status.textContent = '\u274C Only .txt URLs are accepted (e.g. https://example.com/list.txt)';
+    return;
+  }
+  status.textContent = 'Adding\u2026';
+  try {
+    const res = await fetch('/api/feeds/custom', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ url: url, listType: sel.value })
+    });
+    const data = await res.json();
+    if (data.status === 'ok') {
+      location.reload();
+    } else {
+      status.textContent = '\u274C ' + (data.error || 'Failed to add feed');
+    }
+  } catch(e) {
+    status.textContent = '\u274C Network error';
+  }
+}
+
+async function removeCustomFeed(id) {
+  if (!confirm('Remove custom feed ' + id + '?')) return;
+  try {
+    const res = await fetch('/api/feeds/custom/remove', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ id: id })
+    });
+    const data = await res.json();
+    if (data.status === 'ok') {
+      location.reload();
+    } else {
+      document.getElementById('feed-status').textContent = '\u274C ' + (data.error || 'Failed to remove feed');
+    }
+  } catch(e) {
+    document.getElementById('feed-status').textContent = '\u274C Network error';
+  }
 }
 </script>
 </body>

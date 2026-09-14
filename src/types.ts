@@ -31,6 +31,11 @@ export interface FetchFeedResult {
   error?: string;
 }
 
+export interface FeedConfig {
+  disabled: string[];
+  custom: Feed[];
+}
+
 export interface SyncResult {
   ts: string;
   elapsedMs: number;
