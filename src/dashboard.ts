@@ -659,6 +659,37 @@ ${feedSettingsRows(cfg)}
 </div>
 
 <script>
+// \u2500\u2500 Admin token \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500
+// All mutating/admin endpoints require the ADMIN_TOKEN Worker secret, sent as the
+// X-Auth-Token header. The token is kept in sessionStorage (per tab session only).
+// NOTE: this is the dashboard admin token (wrangler secret put ADMIN_TOKEN), NOT the
+// Cloudflare API token.
+function getAdminToken() {
+  let t = sessionStorage.getItem('ti_admin_token');
+  while (!t) {
+    t = prompt('Dashboard admin token required (set via: wrangler secret put ADMIN_TOKEN):');
+    if (t === null) return null;
+    t = t.trim();
+    if (t) sessionStorage.setItem('ti_admin_token', t);
+  }
+  return t;
+}
+
+function handleAuthError(res) {
+  if (res.status === 401 || res.status === 503) {
+    sessionStorage.removeItem('ti_admin_token');
+    return '\u274C Unauthorized \u2014 check the ADMIN_TOKEN secret';
+  }
+  return null;
+}
+
+async function authFetch(input, init) {
+  const t = getAdminToken();
+  if (t === null) throw new Error('admin token required');
+  const headers = Object.assign({}, (init && init.headers) || {}, { 'X-Auth-Token': t });
+  return fetch(input, Object.assign({}, init || {}, { headers: headers }));
+}
+
 // \u2500\u2500 Sync button \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500
 async function triggerSync() {
   const btn = document.getElementById('sync-btn');

@@ -50,8 +50,23 @@ describe("renderDashboard", () => {
     // new Function parses the body without executing it; any escaping mistake in the
     // template literal (e.g. \n inside a regex or string) becomes a SyntaxError here.
     expect(() => new Function(match![1])).not.toThrow();
-    // The handlers referenced by inline onclick attributes must exist in the script.
-    for (const fn of ["triggerSync", "toggleStream", "toggleFeed", "addCustomFeed", "removeCustomFeed", "switchListTab", "loadListItems", "addListItems", "itemsPage"]) {
+    // The handlers referenced by inline onclick attributes must exist in the script,
+    // AND so must the auth helpers those handlers call (a missing definition parses
+    // fine but throws ReferenceError at click time — exactly the bug this guards).
+    for (const fn of [
+      "getAdminToken",
+      "handleAuthError",
+      "authFetch",
+      "triggerSync",
+      "toggleStream",
+      "toggleFeed",
+      "addCustomFeed",
+      "removeCustomFeed",
+      "switchListTab",
+      "loadListItems",
+      "addListItems",
+      "itemsPage",
+    ]) {
       expect(match![1]).toContain(`function ${fn}`);
     }
   });

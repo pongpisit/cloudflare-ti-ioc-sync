@@ -436,7 +436,7 @@ export default {
 
     // Browsers request this on every page load; answer without triggering the auth gate.
     if (request.method === "GET" && url.pathname === "/favicon.ico") {
-      return new Response(null, { status: 204 });
+      return new Response(null, { status: 204, headers: { "Cache-Control": "no-store" } });
     }
 
     // Auth gate: only the dashboard and its status JSON are public. Every mutating,
@@ -460,19 +460,22 @@ export default {
       const lastSync = parseSyncResult(await env.IOC_CACHE.get("last_sync"));
       const config = await loadFeedConfig(env);
       return new Response(renderDashboard(lastSync, config), {
-        headers: { "Content-Type": "text/html; charset=utf-8" },
+        headers: { "Content-Type": "text/html; charset=utf-8", "Cache-Control": "no-store" },
       });
     }
 
     if (request.method === "GET" && url.pathname === "/api/status") {
       const lastSync = parseSyncResult(await env.IOC_CACHE.get("last_sync"));
       const activeFeeds = await getActiveFeeds(env);
-      return Response.json({
-        status: "ok",
-        worker: "ti-ioc-sync",
-        feeds: activeFeeds.map((f) => ({ id: f.id, name: f.name, listType: f.listType })),
-        last_sync: lastSync,
-      });
+      return Response.json(
+        {
+          status: "ok",
+          worker: "ti-ioc-sync",
+          feeds: activeFeeds.map((f) => ({ id: f.id, name: f.name, listType: f.listType })),
+          last_sync: lastSync,
+        },
+        { headers: { "Cache-Control": "no-store" } },
+      );
     }
 
     if (request.method === "GET" && url.pathname === "/api/feeds") {
