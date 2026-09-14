@@ -126,7 +126,10 @@ export function parseUrls(text: string, cap = Infinity): string[] {
       // indexOf is case-sensitive; URL parsing lowercases the host, so search case-insensitively
       const hostIdx = line.toLowerCase().indexOf(u.host);
       const rest = hostIdx >= 0 ? line.slice(hostIdx + u.host.length) : "";
-      const normalised = (schemeHost + rest).replace(/\/+$/, "").replace(/#.*$/, "");
+      // Fully lowercase the stored value: appendToUrlList stores lowercased URLs and
+      // getListItems lowercases on read, so the diff must compare in the same form or
+      // case variants churn (remove + re-add) every sync and 409 the append chunks.
+      const normalised = (schemeHost + rest).replace(/\/+$/, "").replace(/#.*$/, "").toLowerCase();
       urls.push(normalised);
       if (urls.length >= cap) return urls;
     } catch {

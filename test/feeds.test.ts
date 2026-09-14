@@ -75,11 +75,11 @@ describe("parsePlain", () => {
 describe("parseUrls", () => {
   it("normalizes urls: lowercases scheme/host, strips trailing slashes and fragments", () => {
     const input = ["HTTPS://Example.COM/Path/", "https://phish.io/login#anchor", "just some text"].join("\n");
-    expect(parseUrls(input)).toEqual(["https://example.com/Path", "https://phish.io/login"]);
+    expect(parseUrls(input)).toEqual(["https://example.com/path", "https://phish.io/login"]);
   });
 
-  it("keeps query strings and ports", () => {
-    expect(parseUrls("https://evil.io:8443/a?b=c")).toEqual(["https://evil.io:8443/a?b=c"]);
+  it("keeps query strings and ports, lowercasing the whole value", () => {
+    expect(parseUrls("https://Evil.io:8443/A?B=c")).toEqual(["https://evil.io:8443/a?b=c"]);
   });
 
   it("skips non-url lines", () => {

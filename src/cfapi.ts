@@ -3,7 +3,6 @@ import type { CfApiEnvelope, CfListItem, Env } from "./types";
 const CF_BASE = "https://api.cloudflare.com/client/v4";
 const CHUNK_SIZE = 1_000;
 const CHUNK_DELAY_MS = 300;
-const RETRY_DELAY_MS = 50;
 
 function headers(token: string): Record<string, string> {
   return {
@@ -162,20 +161,13 @@ export async function appendToUrlList(
       const is409 = res.status === 409 || errBody.includes("1204") || errBody.includes("already exists");
       if (is409) {
         log?.(
-          `\u26A0 url-list append chunk ${chunkLabel(i)} hit a duplicate: HTTP ${res.status} ${errBody.slice(0, 160)} \u2014 retrying ${chunk.length} items one-by-one`,
+          `\u26A0 url-list append chunk ${chunkLabel(i)} hit a duplicate: HTTP ${res.status} ${errBody.slice(0, 160)} \u2014 bisecting to isolate duplicates`,
         );
-        // Retry one-by-one: a single duplicate fails the whole chunk on the URL list
-        for (const value of chunk) {
-          const r = await patchList(env, env.CF_URL_LIST_ID, {
-            append: [{ value: value.toLowerCase() }],
-          });
-          if (r.ok) {
-            added++;
-          } else {
-            skipped++;
-          }
-          await sleep(RETRY_DELAY_MS);
-        }
+        // A single duplicate fails the whole chunk; bisect instead of grinding
+        // one-by-one so a handful of duplicates costs O(log n) requests.
+        const r = await appendWithBisection(env, chunk, log);
+        added += r.added;
+        skipped += r.skipped;
       } else {
         throw new Error(`CF PATCH url-list append failed (chunk ${chunkLabel(i)}): ${res.status} ${errBody}`);
       }
@@ -201,28 +193,79 @@ export async function deleteFromUrlList(
     } else {
       const errBody = await res.text();
       log?.(
-        `\u26A0 url-list remove chunk ${chunkLabel(i)} failed: HTTP ${res.status} ${errBody.slice(0, 160)} \u2014 retrying ${chunk.length} items one-by-one`,
+        `\u26A0 url-list remove chunk ${chunkLabel(i)} failed: HTTP ${res.status} ${errBody.slice(0, 160)} \u2014 bisecting to isolate bad values`,
       );
-      // Retry one-by-one: removing an item that is not in the list fails the chunk
-      for (const value of chunk) {
-        const ok = await removeUrlListSingle(env, value);
-        if (ok) {
-          deleted++;
-        } else {
-          skipped++;
-        }
-        await sleep(RETRY_DELAY_MS);
-      }
-      log?.(`\u2192 per-item removal pass done (chunk total deleted so far: ${deleted})`);
+      // A single value CF does not recognize fails the whole chunk; bisect instead
+      // of grinding one-by-one so a handful of mismatches costs O(log n) requests.
+      const r = await removeWithBisection(env, chunk, log);
+      deleted += r.deleted;
+      skipped += r.skipped;
     }
     if (i + CHUNK_SIZE < items.length) await sleep(CHUNK_DELAY_MS);
   }
   return { deleted, skipped };
 }
 
-async function removeUrlListSingle(env: Env, value: string): Promise<boolean> {
-  const res = await patchList(env, env.CF_URL_LIST_ID, { remove: [value] });
-  return res.ok;
+interface BisectBudget {
+  remaining: number;
+}
+
+/**
+ * Bisection fallback for URL-list batch failures: a failed chunk is split into
+ * halves recursively until working sub-batches (or single bad values) are
+ * isolated. A handful of problem values costs O(log n) PATCHes instead of n
+ * per-item requests; the budget bounds worst-case subrequest usage.
+ */
+async function removeWithBisection(
+  env: Env,
+  values: string[],
+  log?: (msg: string) => void,
+  budget?: BisectBudget,
+): Promise<{ deleted: number; skipped: number }> {
+  budget ??= { remaining: 48 };
+  if (values.length === 0) return { deleted: 0, skipped: 0 };
+  if (budget.remaining <= 0) {
+    log?.(`\u26A0 removal bisection budget exhausted \u2014 skipping ${values.length} remaining values this run`);
+    return { deleted: 0, skipped: values.length };
+  }
+  budget.remaining--;
+  const res = await patchList(env, env.CF_URL_LIST_ID, { remove: values });
+  if (res.ok) return { deleted: values.length, skipped: 0 };
+  if (values.length === 1) {
+    log?.(`\u2298 could not remove "${values[0]}" \u2014 not in list in this form; skipped`);
+    return { deleted: 0, skipped: 1 };
+  }
+  const mid = Math.ceil(values.length / 2);
+  const a = await removeWithBisection(env, values.slice(0, mid), log, budget);
+  const b = await removeWithBisection(env, values.slice(mid), log, budget);
+  return { deleted: a.deleted + b.deleted, skipped: a.skipped + b.skipped };
+}
+
+async function appendWithBisection(
+  env: Env,
+  values: string[],
+  log?: (msg: string) => void,
+  budget?: BisectBudget,
+): Promise<{ added: number; skipped: number }> {
+  budget ??= { remaining: 48 };
+  if (values.length === 0) return { added: 0, skipped: 0 };
+  if (budget.remaining <= 0) {
+    log?.(`\u26A0 append bisection budget exhausted \u2014 skipping ${values.length} remaining values this run`);
+    return { added: 0, skipped: values.length };
+  }
+  budget.remaining--;
+  const res = await patchList(env, env.CF_URL_LIST_ID, {
+    append: values.map((v) => ({ value: v.toLowerCase() })),
+  });
+  if (res.ok) return { added: values.length, skipped: 0 };
+  if (values.length === 1) {
+    log?.(`\u2298 could not append "${values[0]}" \u2014 rejected by CF; skipped`);
+    return { added: 0, skipped: 1 };
+  }
+  const mid = Math.ceil(values.length / 2);
+  const a = await appendWithBisection(env, values.slice(0, mid), log, budget);
+  const b = await appendWithBisection(env, values.slice(mid), log, budget);
+  return { added: a.added + b.added, skipped: a.skipped + b.skipped };
 }
 
 export async function clearUrlList(env: Env): Promise<{ cleared: number }> {
