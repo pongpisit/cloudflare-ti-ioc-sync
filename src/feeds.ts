@@ -94,18 +94,23 @@ export function extractDomain(raw: string): string {
   }
 }
 
-export function parsePlain(text: string): string[] {
-  return text
-    .split("\n")
-    .map((l) => l.trim())
-    .filter((l) => l && !l.startsWith("#") && !l.startsWith(";"))
-    .map(extractDomain)
-    .filter(isValidDomain);
+export function parsePlain(text: string, cap = Infinity): string[] {
+  const out: string[] = [];
+  for (const line of text.split("\n")) {
+    const t = line.trim();
+    if (!t || t.startsWith("#") || t.startsWith(";")) continue;
+    const d = extractDomain(t);
+    if (isValidDomain(d)) {
+      out.push(d);
+      if (out.length >= cap) return out;
+    }
+  }
+  return out;
 }
 
 const URL_RE = /^https?:\/\/.{4}/i;
 
-export function parseUrls(text: string): string[] {
+export function parseUrls(text: string, cap = Infinity): string[] {
   const urls: string[] = [];
   for (const raw of text.split("\n")) {
     const line = raw.trim();
@@ -123,6 +128,7 @@ export function parseUrls(text: string): string[] {
       const rest = hostIdx >= 0 ? line.slice(hostIdx + u.host.length) : "";
       const normalised = (schemeHost + rest).replace(/\/+$/, "").replace(/#.*$/, "");
       urls.push(normalised);
+      if (urls.length >= cap) return urls;
     } catch {
       // skip unparseable lines
     }
@@ -135,16 +141,22 @@ interface ThreatFoxEntry {
   ioc?: string;
 }
 
-export function parseThreatFox(json: unknown): string[] {
+export function parseThreatFox(json: unknown, cap = Infinity): string[] {
   const data = (json as { data?: unknown } | null)?.data;
   if (!Array.isArray(data)) return [];
-  return (data as ThreatFoxEntry[])
-    .filter((e) => e.ioc_type === "domain")
-    .map((e) => extractDomain((e.ioc ?? "").split(":")[0]))
-    .filter(isValidDomain);
+  const out: string[] = [];
+  for (const e of data as ThreatFoxEntry[]) {
+    if (e.ioc_type !== "domain") continue;
+    const d = extractDomain((e.ioc ?? "").split(":")[0]);
+    if (isValidDomain(d)) {
+      out.push(d);
+      if (out.length >= cap) return out;
+    }
+  }
+  return out;
 }
 
-export function parseThreatFoxCsv(text: string): string[] {
+export function parseThreatFoxCsv(text: string, cap = Infinity): string[] {
   const domains: string[] = [];
   for (const rawLine of text.split("\n")) {
     const trimmed = rawLine.replace(/\r$/, "").trim();
@@ -154,12 +166,15 @@ export function parseThreatFoxCsv(text: string): string[] {
       .map((c) => c.replace(/^"+|"+$/g, "").trim());
     if (cols.length < 3) continue;
     const domain = extractDomain(cols[2].split(":")[0]);
-    if (isValidDomain(domain)) domains.push(domain);
+    if (isValidDomain(domain)) {
+      domains.push(domain);
+      if (domains.length >= cap) return domains;
+    }
   }
   return domains;
 }
 
-export function parsePhishTankCsv(text: string): string[] {
+export function parsePhishTankCsv(text: string, cap = Infinity): string[] {
   const domains: string[] = [];
   for (const line of text.split("\n")) {
     const trimmed = line.trim();
@@ -167,12 +182,15 @@ export function parsePhishTankCsv(text: string): string[] {
     const cols = trimmed.split(/,(?=(?:[^"]*"[^"]*")*[^"]*$)/);
     if (cols.length < 2) continue;
     const domain = extractDomain(cols[1].replace(/^"|"$/g, ""));
-    if (isValidDomain(domain)) domains.push(domain);
+    if (isValidDomain(domain)) {
+      domains.push(domain);
+      if (domains.length >= cap) return domains;
+    }
   }
   return domains;
 }
 
-export function parsePhishStatsCsv(text: string): string[] {
+export function parsePhishStatsCsv(text: string, cap = Infinity): string[] {
   const domains: string[] = [];
   for (const line of text.split("\n")) {
     const trimmed = line.trim();
@@ -180,16 +198,20 @@ export function parsePhishStatsCsv(text: string): string[] {
     const cols = trimmed.split(/,(?=(?:[^"]*"[^"]*")*[^"]*$)/);
     if (cols.length < 3) continue;
     const domain = extractDomain(cols[2].replace(/^"|"$/g, ""));
-    if (isValidDomain(domain)) domains.push(domain);
+    if (isValidDomain(domain)) {
+      domains.push(domain);
+      if (domains.length >= cap) return domains;
+    }
   }
   return domains;
 }
 
 export function parseFeed(feed: Feed, rawText: string, rawJson: unknown): string[] {
-  if (feed.format === "json_threatfox") return parseThreatFox(rawJson);
-  if (feed.format === "csv_threatfox") return parseThreatFoxCsv(rawText);
-  if (feed.format === "csv_phishtank") return parsePhishTankCsv(rawText);
-  if (feed.format === "csv_phishstats") return parsePhishStatsCsv(rawText);
-  if (feed.listType === "url") return parseUrls(rawText);
-  return parsePlain(rawText);
+  const cap = feed.maxDomains ?? Infinity;
+  if (feed.format === "json_threatfox") return parseThreatFox(rawJson, cap);
+  if (feed.format === "csv_threatfox") return parseThreatFoxCsv(rawText, cap);
+  if (feed.format === "csv_phishtank") return parsePhishTankCsv(rawText, cap);
+  if (feed.format === "csv_phishstats") return parsePhishStatsCsv(rawText, cap);
+  if (feed.listType === "url") return parseUrls(rawText, cap);
+  return parsePlain(rawText, cap);
 }

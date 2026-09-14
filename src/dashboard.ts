@@ -696,17 +696,33 @@ async function triggerSync() {
   btn.textContent = '\u23F3 Syncing\u2026';
   status.textContent = '';
   try {
-    const res = await fetch('/sync/run', { method: 'POST' });
-    const data = await res.json();
-    if (data.status === 'ok') {
-      const r = data.result;
-      status.textContent = \`\u2705 Done \u2014 domains +\${r.domains.added}/-\${r.domains.removed}=\${r.domains.total}  urls +\${r.urls.added}/-\${r.urls.removed}=\${r.urls.total}\`;
-      setTimeout(() => location.reload(), 2000);
-    } else {
-      status.textContent = '\u274C ' + (data.error || 'Unknown error');
+    // A full sync can outlive the edge proxy's response timeout, so trigger it in
+    // the background (ctx.waitUntil) and poll the public status endpoint instead
+    // of holding a synchronous request open.
+    const before = await fetch('/api/status').then(function(r){ return r.json(); });
+    const startTs = (before.last_sync && before.last_sync.ts) || '';
+    const res = await authFetch('/sync', { method: 'POST' });
+    const authErr = handleAuthError(res);
+    if (authErr) { status.textContent = authErr; return; }
+    if (!res.ok) {
+      const data = await res.json().catch(function(){ return {}; });
+      status.textContent = '\u274C ' + (data.error || 'Failed to trigger sync');
+      return;
     }
+    status.textContent = 'Sync running in background\u2026';
+    for (let i = 0; i < 60; i++) {
+      await new Promise(function(r){ setTimeout(r, 5000); });
+      const st = await fetch('/api/status').then(function(r){ return r.json(); });
+      if (st.last_sync && st.last_sync.ts && st.last_sync.ts !== startTs) {
+        status.textContent = '\u2705 Sync complete \u2014 reloading';
+        setTimeout(function(){ location.reload(); }, 1500);
+        return;
+      }
+      status.textContent = 'Syncing\u2026 (' + ((i + 1) * 5) + 's)';
+    }
+    status.textContent = '\u23F3 Still running \u2014 refresh in a moment to see results';
   } catch(e) {
-    status.textContent = '\u274C Network error';
+    status.textContent = e.message === 'admin token required' ? '\u26BF Admin token required' : '\u274C Network error';
   }
   btn.disabled = false;
   btn.textContent = '\u26A1 Run Sync Now';

@@ -154,4 +154,14 @@ describe("parseFeed dispatch", () => {
     const csv = '"2024-01-01","x","evil.io:80","domain",';
     expect(parseFeed(feed, csv, null)).toEqual(["evil.io"]);
   });
+
+  it("stops parsing at the feed cap (identical result to slice, without wasted work)", () => {
+    const text = Array.from({ length: 50 }, (_, i) => `d${i}.example.com`).join("\n");
+    expect(parsePlain(text, 5)).toEqual(["d0.example.com", "d1.example.com", "d2.example.com", "d3.example.com", "d4.example.com"]);
+    expect(parsePlain(text, 5).length).toBe(5);
+    expect(parsePlain(text).length).toBe(50); // uncapped parse unchanged
+    const urls = Array.from({ length: 20 }, (_, i) => `https://u${i}.example.org/x`).join("\n");
+    expect(parseUrls(urls, 3).length).toBe(3);
+    expect(parseUrls(urls).length).toBe(20); // uncapped parse unchanged
+  });
 });
