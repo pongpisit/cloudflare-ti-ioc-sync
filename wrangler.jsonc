@@ -1,0 +1,20 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "ti-ioc-sync",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-09-14",
+  "compatibility_flags": ["nodejs_compat"],
+  "triggers": {
+    "crons": ["0 8 * * *"]
+  },
+  "kv_namespaces": [
+    {
+      "binding": "IOC_CACHE",
+      "id": "01e2220042e9442d8266b71f689ef6a5"
+    }
+  ],
+  "observability": {
+    "enabled": true,
+    "head_sampling_rate": 1
+  }
+}

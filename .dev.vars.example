@@ -1,0 +1,6 @@
+# Copy this file to .dev.vars (gitignored) and fill in real values for `wrangler dev`.
+# In production these are set with: wrangler secret put <NAME>
+CF_ACCOUNT_ID=your_cloudflare_account_id
+CF_API_TOKEN=your_api_token_with_gateway_list_and_intel_permissions
+CF_LIST_ID=your_gateway_domain_list_id
+CF_URL_LIST_ID=your_gateway_url_list_id
