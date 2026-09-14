@@ -983,7 +983,7 @@ function itemsPage(delta) {
 async function addListItems() {
   const input = document.getElementById('item-input');
   const status = document.getElementById('items-status');
-  const values = input.value.split(/[\n,;]+/).map(function(s){ return s.trim(); }).filter(Boolean);
+  const values = input.value.split(/[\\n,;]+/).map(function(s){ return s.trim(); }).filter(Boolean);
   if (!values.length) {
     status.textContent = '\u274C Enter at least one value';
     return;
@@ -1019,7 +1019,7 @@ async function addListItems() {
 async function removeListItem(value, isManual) {
   const msg = isManual
     ? 'Remove ' + value + ' from the list?'
-    : 'Remove ' + value + ' from the list?\n\nNote: this item comes from a feed \u2014 it returns on the next sync if the feed still lists it. Disable the feed to drop it permanently.';
+    : 'Remove ' + value + ' from the list?\\n\\nNote: this item comes from a feed \\u2014 it returns on the next sync if the feed still lists it. Disable the feed to drop it permanently.';
   if (!confirm(msg)) return;
   const status = document.getElementById('items-status');
   try {

@@ -43,6 +43,19 @@ describe("renderDashboard", () => {
     expect(html).not.toContain("it's a 'quoted' error</div>");
   });
 
+  it("inline client script parses as valid JavaScript (catches template-literal escape bugs)", () => {
+    const html = renderDashboard(sample);
+    const match = html.match(/<script>\n([\s\S]*?)\n<\/script>/);
+    expect(match).not.toBeNull();
+    // new Function parses the body without executing it; any escaping mistake in the
+    // template literal (e.g. \n inside a regex or string) becomes a SyntaxError here.
+    expect(() => new Function(match![1])).not.toThrow();
+    // The handlers referenced by inline onclick attributes must exist in the script.
+    for (const fn of ["triggerSync", "toggleStream", "toggleFeed", "addCustomFeed", "removeCustomFeed", "switchListTab", "loadListItems", "addListItems", "itemsPage"]) {
+      expect(match![1]).toContain(`function ${fn}`);
+    }
+  });
+
   it("shows the actual daily cron schedule", () => {
     const html = renderDashboard(sample);
     expect(html).toContain("08:00 UTC");

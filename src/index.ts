@@ -434,6 +434,11 @@ export default {
   async fetch(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
     const url = new URL(request.url);
 
+    // Browsers request this on every page load; answer without triggering the auth gate.
+    if (request.method === "GET" && url.pathname === "/favicon.ico") {
+      return new Response(null, { status: 204 });
+    }
+
     // Auth gate: only the dashboard and its status JSON are public. Every mutating,
     // debug, and streaming route requires the ADMIN_TOKEN secret via the X-Auth-Token
     // header (fail-closed when the secret is not configured).
