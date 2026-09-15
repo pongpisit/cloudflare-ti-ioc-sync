@@ -91,6 +91,48 @@ All routes except the two public reads require an `X-Auth-Token` header matching
 curl -X POST https://<worker-host>/sync/run -H "X-Auth-Token: $ADMIN_TOKEN"
 ```
 
+### Bulk import / upload
+
+**Option A — through the Worker (recommended).** Items become `manual` and survive the
+daily sync. Use `scripts/upload-list.mjs` for local files:
+
+```sh
+node scripts/upload-list.mjs add domain hostnames.txt        # hostname / DNS list
+node scripts/upload-list.mjs add url urls.txt                # full-URI list
+node scripts/upload-list.mjs remove domain cleanup.txt       # bulk remove
+```
+
+The file can be plain text (one value per line, `#` comments allowed) or the CSV format
+the Zero Trust dashboard exports (`value,description` header row — only the first column
+is imported). Values are validated, deduplicated, whitelisted domains are rejected, and
+batches of 500 are sent to `POST /api/lists/items`.
+
+**Option B — a hosted `.txt` as a custom feed.** If your list lives at a URL (GitHub
+raw, gist, your server), add it in the dashboard's *Feed Settings* (or
+`POST /api/feeds/custom`). It is then fetched and diffed daily like any other feed —
+`.txt` plain-text URLs only; IP-literal/localhost/credential URLs are rejected.
+
+**Option C — upload directly in the Zero Trust dashboard.** Zero Trust → Reusable
+components → Lists → **Upload CSV** (the dashboard takes CSV, not `.txt`):
+
+```csv
+value,description
+bad-host.example.com,added by hand
+phish.example.net
+```
+
+- One entry per line, header row required for descriptions, no trailing whitespace,
+  CRLF or LF; file < 2 MB
+- Hostname lists: bare domains (subdomains are matched too — **no `*.` wildcards**,
+  they are rejected); URL lists: full URLs including scheme
+- No duplicate entries (Gateway ignores trailing `/` and converts non-Latin domains
+  to Punycode); lists are capped at 1,000 entries on Standard plans
+
+> ⚠️ **Anything added directly to `CF-IOC-Domains`/`CF-IOC-URLs` in the Zero Trust
+> dashboard is invisible to this Worker — the next sync (daily 08:00 UTC) removes it.**
+> Use Option A or B for items you want to keep, or create a *separate* list in Zero
+> Trust and reference it alongside `$IOC_DNS`/`$IOC_URL` in your policies.
+
 ## Setup
 
 ```bash
