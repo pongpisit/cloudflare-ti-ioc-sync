@@ -40,14 +40,34 @@ function feedSettingsRows(cfg: FeedConfig): string {
     .map((f) => {
       const enabled = !cfg.disabled.includes(f.id);
       return `          <tr>
-            <td><input type="checkbox" ${enabled ? "checked" : ""} onchange="toggleFeed(this, '${f.id}')"/></td>
+            <td><input type="checkbox" ${enabled ? "checked" : ""} class="switch" onchange="toggleFeed(this, '${f.id}')" aria-label="Enable ${esc(f.name)}"/></td>
             <td><span class="badge badge-${f.listType}">${f.listType.toUpperCase()}</span></td>
             <td>${esc(f.name)}${f.custom ? '<span class="custom-tag">custom</span>' : ""}</td>
-            <td>${f.listType === "url" ? "IOC-URLs" : "IOC-Domains"}</td>
-            <td class="settings-actions">${f.custom ? `<button class="btn-remove" onclick="removeCustomFeed('${f.id}')">\u2715 Remove</button>` : ""}</td>
+            <td class="td-list">${f.listType === "url" ? "IOC_URL" : "IOC_DNS"}</td>
+            <td class="td-actions">${f.custom ? `<button class="btn-icon" onclick="removeCustomFeed('${f.id}')">Remove</button>` : ""}</td>
           </tr>`;
     })
     .join("\n");
+}
+
+// The six real phases of runSync — rendered as the pipeline trace. The same
+// markup doubles as the how-it-works diagram (Overview) and as the live
+// progress indicator (Terminal), where markStep() lights nodes up as
+// "STEP n" lines arrive in the stream.
+const TRACE_STEPS: [string, string][] = [
+  ["Fetch", "all feeds in parallel"],
+  ["Partition", "hostname / URL buckets"],
+  ["Read lists", "current Gateway contents"],
+  ["Diff", "add + remove sets"],
+  ["Intel check", "skip known threats"],
+  ["Apply", "PATCH Gateway lists"],
+];
+
+function traceHtml(live: boolean): string {
+  return `<ol class="trace">${TRACE_STEPS.map(
+    (s, i) =>
+      `<li class="tnode"${live ? ` id="step-${i + 1}"` : ""}><span class="tdot"></span><span class="tname">${s[0]}</span><span class="tcap">${s[1]}</span></li>`,
+  ).join("")}</ol>`;
 }
 
 export function renderDashboard(lastSync: SyncResult | null, cfg: FeedConfig = { disabled: [], custom: [] }): string {
@@ -55,6 +75,8 @@ export function renderDashboard(lastSync: SyncResult | null, cfg: FeedConfig = {
     ? new Date(lastSync.ts).toLocaleString("en-GB", { timeZone: "Asia/Bangkok", hour12: false })
     : "Never";
   const elapsed = lastSync ? `${(lastSync.elapsedMs / 1e3).toFixed(1)}s` : "\u2014";
+  const domainCount = (lastSync?.domains.total ?? 0).toLocaleString();
+  const urlCount = (lastSync?.urls.total ?? 0).toLocaleString();
   const customDomainIds = cfg.custom.filter((f) => f.listType === "domain").map((f) => f.id);
   const customUrlIds = cfg.custom.filter((f) => f.listType === "url").map((f) => f.id);
   const domainFeeds = Object.entries(lastSync?.feedStats ?? {}).filter(
@@ -67,597 +89,420 @@ export function renderDashboard(lastSync: SyncResult | null, cfg: FeedConfig = {
     ...BUILTIN_FEED_NAMES,
     ...Object.fromEntries(cfg.custom.map((f) => [f.id, f.name])),
   };
-  function feedRows(feeds: [string, number][], type: string): string {
-    if (!feeds.length) return '<tr><td colspan="3" class="empty">No data yet \u2014 run a sync</td></tr>';
-    return feeds
-      .map(
-        ([id, count]) => `
-      <tr>
-        <td><span class="badge badge-${type}">${type.toUpperCase()}</span></td>
-        <td>${esc(feedNames[id] ?? id)}</td>
-        <td class="count">${count.toLocaleString()}</td>
-      </tr>`,
-      )
-      .join("");
-  }
+  const allFeedCounts = [
+    ...domainFeeds.map(([id, count]) => ({ id, count, type: "domain" })),
+    ...urlFeeds.map(([id, count]) => ({ id, count, type: "url" })),
+  ];
+  const feedTableRows = allFeedCounts.length
+    ? allFeedCounts
+        .map(
+          (r) => `
+          <tr>
+            <td>${esc(feedNames[r.id] ?? r.id)}</td>
+            <td><span class="badge badge-${r.type}">${r.type.toUpperCase()}</span></td>
+            <td class="count">${r.count.toLocaleString()}</td>
+          </tr>`,
+        )
+        .join("")
+    : `<tr><td colspan="3" class="empty">No data yet \u2014 run a sync</td></tr>`;
   const errors = lastSync?.feedErrors ?? [];
   const errHtml = errors.length
-    ? `<div class="errors"><div class="err-title">\u26A0 Feed Errors (${errors.length})</div>${errors
+    ? `<div class="errors"><div class="err-title">Feed errors (${errors.length})</div>${errors
         .map((e) => `<div class="err-item">${esc(e)}</div>`)
         .join("")}</div>`
     : "";
+  const health = errors.length
+    ? `<span class="dot dot-err"></span>${errors.length} feed error${errors.length === 1 ? "" : "s"}`
+    : `<span class="dot dot-ok"></span>all feeds healthy`;
   return `<!DOCTYPE html>
 <html lang="en">
 <head>
   <meta charset="UTF-8"/>
   <meta name="viewport" content="width=device-width,initial-scale=1"/>
-  <title>TI IOC Sync \u2014 Dashboard</title>
+  <meta name="theme-color" content="#1D1D1F"/>
+  <meta name="description" content="Syncs OSINT threat-intelligence feeds into Cloudflare Zero Trust Gateway lists."/>
+  <title>TI IOC Sync \u00B7 Gateway list ops</title>
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'%3E%3Cpath fill='%23F6821F' d='M7.2 18.6a4.3 4.3 0 0 1-.1-8.6 5.7 5.7 0 0 1 11.1-1.3 4 4 0 0 1-.4 7.9z'/%3E%3C/svg%3E"/>
+  <link rel="preconnect" href="https://fonts.googleapis.com"/>
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin/>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@400;600&family=Space+Grotesk:wght@500;600;700&display=swap" rel="stylesheet"/>
   <style>
+    :root {
+      --bg: #1D1D1F; --panel: #242529; --panel-2: #2B2C31; --console: #141518;
+      --border: #33353B; --border-2: #3F4148;
+      --text: #F7F7F8; --text-2: #AFB2BB; --text-3: #7A7D85;
+      --orange: #F6821F; --orange-2: #FBAD41;
+      --ok: #4CAF74; --err: #ED4C5C; --blue: #74A9FF;
+      --font-ui: 'Inter', -apple-system, 'Segoe UI', sans-serif;
+      --font-display: 'Space Grotesk', 'Inter', sans-serif;
+      --font-mono: 'JetBrains Mono', ui-monospace, 'SF Mono', monospace;
+    }
     *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+    html { color-scheme: dark; }
+    body { background: var(--bg); color: var(--text); font: 14px/1.5 var(--font-ui); padding-bottom: 72px; }
+    [hidden] { display: none !important; }
+    :focus-visible { outline: 2px solid var(--orange); outline-offset: 2px; border-radius: 2px; }
+    a { color: var(--blue); text-decoration: none; }
+    a:hover { text-decoration: underline; }
 
-    body {
-      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
-      background: #0a0e1a;
-      color: #e2e8f0;
-      min-height: 100vh;
-      padding: 0 0 60px;
-    }
+    /* \u2500 Top bar \u2500 */
+    .topbar { position: sticky; top: 0; z-index: 20; background: rgba(29,29,31,.94); backdrop-filter: blur(10px); border-bottom: 1px solid var(--border); }
+    .topbar-in { max-width: 1120px; margin: 0 auto; padding: 0 24px; height: 56px; display: flex; align-items: center; gap: 22px; }
+    .brand { display: flex; align-items: center; gap: 10px; margin-right: auto; min-width: 0; }
+    .brand .mark { width: 24px; height: 24px; flex: none; }
+    .brand-text { line-height: 1.15; }
+    .brand-name { font: 700 15px var(--font-display); letter-spacing: -.01em; white-space: nowrap; }
+    .brand-sub { font: 500 10.5px var(--font-ui); color: var(--text-3); white-space: nowrap; }
+    .tabs { display: flex; gap: 2px; }
+    .tab { appearance: none; background: none; border: 0; cursor: pointer; color: var(--text-2); font: 600 13px var(--font-ui); padding: 7px 14px; border-radius: 999px; transition: color .15s, background .15s; }
+    .tab:hover { color: var(--text); }
+    .tab.active { background: var(--panel-2); color: var(--text); }
+    .clock { font: 600 12px var(--font-mono); color: var(--text-2); white-space: nowrap; }
+    .clock small { color: var(--text-3); font-size: 10px; font-weight: 400; }
 
-    /* \u2500\u2500 Header \u2500\u2500 */
-    .header {
-      background: linear-gradient(135deg, #f6821f 0%, #ff4500 50%, #c0392b 100%);
-      padding: 28px 40px 24px;
-      display: flex;
-      align-items: center;
-      gap: 20px;
-    }
-    .header-logo {
-      width: 48px; height: 48px; border-radius: 10px;
-      background: rgba(255,255,255,0.15);
-      display: flex; align-items: center; justify-content: center;
-      font-size: 28px;
-    }
-    .header-text h1 { font-size: 22px; font-weight: 700; color: #fff; }
-    .header-text p  { font-size: 13px; color: rgba(255,255,255,0.8); margin-top: 2px; }
+    /* \u2500 Layout \u2500 */
+    main { max-width: 1120px; margin: 0 auto; padding: 26px 24px 0; }
+    .panel-title { font: 600 20px var(--font-display); letter-spacing: -.01em; margin-bottom: 6px; }
+    .panel-sub { color: var(--text-2); font-size: 13px; margin-bottom: 18px; max-width: 70ch; }
 
-    .container { max-width: 1100px; margin: 0 auto; padding: 32px 24px 0; }
+    /* \u2500 Hero \u2500 */
+    .hero { font: 700 clamp(28px, 4.6vw, 42px)/1.15 var(--font-display); letter-spacing: -.02em; margin-bottom: 10px; }
+    .hero .num { color: var(--orange); font-variant-numeric: tabular-nums; }
+    .hero-sub { color: var(--text-2); font-size: 13px; display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+    .dot { display: inline-block; width: 7px; height: 7px; border-radius: 50%; margin-right: 2px; }
+    .dot-ok { background: var(--ok); }
+    .dot-err { background: var(--err); }
 
-    /* \u2500\u2500 Stat cards \u2500\u2500 */
-    .stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 16px; margin-bottom: 32px; }
-    .stat-card {
-      background: #111827;
-      border: 1px solid #1f2937;
-      border-radius: 12px;
-      padding: 20px 24px;
-      position: relative;
-      overflow: hidden;
-    }
-    .stat-card::before {
-      content: "";
-      position: absolute; top: 0; left: 0; right: 0; height: 3px;
-    }
-    .stat-card.orange::before { background: linear-gradient(90deg, #f6821f, #fbad41); }
-    .stat-card.blue::before   { background: linear-gradient(90deg, #3b82f6, #06b6d4); }
-    .stat-card.green::before  { background: linear-gradient(90deg, #10b981, #34d399); }
-    .stat-card.purple::before { background: linear-gradient(90deg, #8b5cf6, #a78bfa); }
-    .stat-card.red::before    { background: linear-gradient(90deg, #ef4444, #f97316); }
-    .stat-label { font-size: 11px; text-transform: uppercase; letter-spacing: .08em; color: #6b7280; margin-bottom: 6px; }
-    .stat-value { font-size: 32px; font-weight: 700; color: #f1f5f9; line-height: 1; }
-    .stat-sub   { font-size: 12px; color: #6b7280; margin-top: 6px; }
+    /* \u2500 Actions \u2500 */
+    .actions { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; margin: 20px 0 18px; }
+    .btn { appearance: none; border: 0; cursor: pointer; font: 600 13px var(--font-ui); border-radius: 5px; padding: 9px 16px; transition: background .15s, border-color .15s; display: inline-flex; align-items: center; gap: 7px; }
+    .btn:disabled { opacity: .55; cursor: not-allowed; }
+    .btn-primary { background: var(--orange); color: #17181A; font-weight: 700; }
+    .btn-primary:hover { background: var(--orange-2); }
+    .btn-ghost { background: transparent; border: 1px solid var(--border-2); color: var(--text); }
+    .btn-ghost:hover { background: var(--panel-2); }
+    .status { font-size: 12.5px; color: var(--text-2); min-height: 1em; }
 
-    /* \u2500\u2500 Section \u2500\u2500 */
-    .section { margin-bottom: 32px; }
-    .section-title {
-      font-size: 14px; font-weight: 600; text-transform: uppercase;
-      letter-spacing: .08em; color: #9ca3af;
-      margin-bottom: 14px; padding-bottom: 8px;
-      border-bottom: 1px solid #1f2937;
-    }
+    /* \u2500 Cards \u2500 */
+    .card { background: var(--panel); border: 1px solid var(--border); border-radius: 8px; margin-bottom: 18px; overflow: hidden; }
+    .card-head { padding: 14px 16px 10px; display: flex; justify-content: space-between; align-items: baseline; gap: 12px; flex-wrap: wrap; }
+    .card-title { font: 600 13.5px var(--font-display); }
+    .card-note { font-size: 11.5px; color: var(--text-3); }
+    .card-body { padding: 4px 16px 14px; }
+    .card-foot { padding: 10px 16px; border-top: 1px solid var(--border); font-size: 12px; color: var(--text-3); line-height: 1.6; }
+    .grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; }
 
-    /* \u2500\u2500 Logic flow \u2500\u2500 */
-    .flow {
-      background: #111827;
-      border: 1px solid #1f2937;
-      border-radius: 12px;
-      padding: 24px;
-    }
-    .flow-row {
-      display: flex; align-items: flex-start; gap: 0; flex-wrap: wrap;
-    }
-    .flow-step {
-      flex: 1; min-width: 130px;
-      display: flex; flex-direction: column; align-items: center;
-      text-align: center; padding: 0 4px;
-    }
-    .flow-icon {
-      width: 52px; height: 52px; border-radius: 12px;
-      display: flex; align-items: center; justify-content: center;
-      font-size: 22px; margin-bottom: 8px;
-    }
-    .flow-icon.orange { background: rgba(246,130,31,.15); border: 1px solid rgba(246,130,31,.3); }
-    .flow-icon.blue   { background: rgba(59,130,246,.15); border: 1px solid rgba(59,130,246,.3); }
-    .flow-icon.purple { background: rgba(139,92,246,.15); border: 1px solid rgba(139,92,246,.3); }
-    .flow-icon.green  { background: rgba(16,185,129,.15); border: 1px solid rgba(16,185,129,.3); }
-    .flow-icon.red    { background: rgba(239,68,68,.15);  border: 1px solid rgba(239,68,68,.3); }
-    .flow-icon.cyan   { background: rgba(6,182,212,.15);  border: 1px solid rgba(6,182,212,.3); }
-    .flow-name { font-size: 12px; font-weight: 600; color: #e2e8f0; margin-bottom: 3px; }
-    .flow-desc { font-size: 11px; color: #6b7280; line-height: 1.4; }
-    .flow-arrow {
-      align-self: center; color: #374151; font-size: 20px; padding: 0 2px;
-      flex-shrink: 0;
-    }
-
-    /* \u2500\u2500 Tables \u2500\u2500 */
-    .table-wrap {
-      background: #111827;
-      border: 1px solid #1f2937;
-      border-radius: 12px;
-      overflow: hidden;
-    }
+    /* \u2500 Tables \u2500 */
     table { width: 100%; border-collapse: collapse; }
-    th {
-      background: #0f172a; text-align: left;
-      padding: 10px 16px; font-size: 11px;
-      text-transform: uppercase; letter-spacing: .06em; color: #6b7280;
-    }
-    td {
-      padding: 10px 16px; font-size: 13px; color: #d1d5db;
-      border-top: 1px solid #1f2937;
-    }
-    td.count { font-weight: 700; font-family: monospace; font-size: 14px; color: #f1f5f9; text-align: right; }
-    td.empty { color: #6b7280; font-style: italic; text-align: center; padding: 20px; }
-    tr:hover td { background: rgba(255,255,255,.02); }
+    th { font: 600 10.5px var(--font-ui); text-transform: uppercase; letter-spacing: .07em; color: var(--text-3); text-align: left; padding: 9px 16px; border-bottom: 1px solid var(--border); }
+    td { padding: 9px 16px; font-size: 13px; border-bottom: 1px solid rgba(51,53,59,.55); vertical-align: middle; }
+    tr:last-child td { border-bottom: 0; }
+    tbody tr:hover td { background: var(--panel-2); }
+    td.count { font: 600 13px var(--font-mono); font-variant-numeric: tabular-nums; text-align: right; }
+    td.empty { color: var(--text-3); text-align: center; padding: 22px; }
+    td.td-list { color: var(--text-2); font-family: var(--font-mono); font-size: 12px; }
+    td.td-actions { text-align: right; }
 
-    .badge {
-      display: inline-block; padding: 2px 8px; border-radius: 4px;
-      font-size: 10px; font-weight: 700; letter-spacing: .05em; text-transform: uppercase;
-    }
-    .badge-url    { background: rgba(59,130,246,.2);  color: #60a5fa; border: 1px solid rgba(59,130,246,.3); }
-    .badge-domain { background: rgba(16,185,129,.2);  color: #34d399; border: 1px solid rgba(16,185,129,.3); }
+    /* \u2500 Badges \u2500 */
+    .badge { display: inline-block; padding: 2px 8px; border-radius: 4px; font: 700 10px var(--font-ui); letter-spacing: .06em; text-transform: uppercase; }
+    .badge-domain { background: rgba(76,175,116,.14); color: #7ED9A0; border: 1px solid rgba(76,175,116,.3); }
+    .badge-url { background: rgba(116,169,255,.14); color: #9CC0FF; border: 1px solid rgba(116,169,255,.3); }
+    .custom-tag { font: 700 9px var(--font-ui); letter-spacing: .06em; text-transform: uppercase; background: rgba(139,92,246,.16); color: #B79BF8; border: 1px solid rgba(139,92,246,.32); border-radius: 4px; padding: 1px 6px; margin-left: 8px; vertical-align: middle; }
+    .badge-manual { display: inline-block; font: 700 9px var(--font-ui); letter-spacing: .06em; text-transform: uppercase; background: rgba(139,92,246,.16); color: #B79BF8; border: 1px solid rgba(139,92,246,.32); border-radius: 4px; padding: 1px 6px; margin-left: 8px; vertical-align: middle; }
+    .item-value { font: 12.5px var(--font-mono); word-break: break-all; }
 
-    /* \u2500\u2500 Two-col grid \u2500\u2500 */
-    .two-col { display: grid; grid-template-columns: 1fr 1fr; gap: 20px; }
-    @media (max-width: 700px) { .two-col { grid-template-columns: 1fr; } }
+    /* \u2500 Errors banner \u2500 */
+    .errors { background: rgba(237,76,92,.07); border: 1px solid rgba(237,76,92,.28); border-radius: 8px; padding: 12px 16px; margin-bottom: 18px; }
+    .err-title { font: 600 13px var(--font-ui); color: var(--err); margin-bottom: 6px; }
+    .err-item { font: 12px/1.65 var(--font-mono); color: #F1939D; word-break: break-all; }
 
-    .list-header {
-      padding: 12px 16px 8px;
-      display: flex; align-items: center; justify-content: space-between;
-    }
-    .list-header-title { font-size: 13px; font-weight: 600; color: #f1f5f9; }
-    .list-count-pill {
-      background: #1f2937; border-radius: 20px;
-      padding: 2px 10px; font-size: 12px; font-weight: 700;
-      font-family: monospace; color: #f1f5f9;
-    }
+    /* \u2500 Trace (pipeline signature) \u2500 */
+    .trace { list-style: none; display: flex; padding: 6px 2px 2px; }
+    .tnode { flex: 1; min-width: 92px; position: relative; text-align: center; padding: 0 6px; }
+    .tnode::after { content: ""; position: absolute; top: 5px; left: calc(-50% + 12px); width: calc(100% - 24px); border-top: 2px solid var(--border); }
+    .tnode:first-child::after { display: none; }
+    .tdot { display: block; width: 10px; height: 10px; border-radius: 50%; background: var(--panel-2); border: 2px solid var(--border-2); margin: 0 auto 8px; position: relative; z-index: 1; transition: background .2s, border-color .2s; }
+    .tname { display: block; font: 600 12.5px var(--font-ui); }
+    .tcap { display: block; font-size: 11px; color: var(--text-3); margin-top: 2px; line-height: 1.4; }
+    .tnode.done .tdot { background: var(--orange); border-color: var(--orange); }
+    .tnode.done::after { border-color: var(--orange); }
+    .tnode.active .tdot { background: var(--orange); border-color: var(--orange); animation: tpulse 1.4s ease-in-out infinite; }
+    @keyframes tpulse { 50% { box-shadow: 0 0 0 6px rgba(246,130,31,.14); } }
 
-    /* \u2500\u2500 Errors \u2500\u2500 */
-    .errors {
-      background: rgba(239,68,68,.08);
-      border: 1px solid rgba(239,68,68,.25);
-      border-radius: 10px; padding: 14px 16px; margin-bottom: 24px;
-    }
-    .err-title { font-size: 13px; font-weight: 600; color: #f87171; margin-bottom: 8px; }
-    .err-item  { font-size: 12px; color: #fca5a5; font-family: monospace; padding: 2px 0; }
+    /* \u2500 Forms \u2500 */
+    .add-row { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; padding: 14px 16px; border-top: 1px solid var(--border); }
+    .add-row input[type=text] { background: var(--bg); border: 1px solid var(--border-2); border-radius: 5px; color: var(--text); font: 12.5px var(--font-mono); padding: 9px 12px; }
+    .add-row input[type=text]:focus { border-color: var(--orange); outline: none; }
+    .add-row select { background: var(--bg); border: 1px solid var(--border-2); border-radius: 5px; color: var(--text); font: 13px var(--font-ui); padding: 9px 10px; }
+    #custom-url { flex: 1 1 240px; }
+    #item-input { flex: 1 1 220px; }
+    #item-search { flex: 0 1 150px; }
+    .hint { width: 100%; font-size: 11.5px; color: var(--text-3); line-height: 1.6; }
+    .hint b { color: var(--text-2); }
 
-    /* \u2500\u2500 Sync button \u2500\u2500 */
-    .actions { display: flex; gap: 12px; margin-bottom: 24px; flex-wrap: wrap; }
-    .btn {
-      padding: 10px 22px; border-radius: 8px; border: none;
-      font-size: 13px; font-weight: 600; cursor: pointer;
-      display: inline-flex; align-items: center; gap: 8px;
-      transition: opacity .15s;
-    }
-    .btn:hover { opacity: .85; }
-    .btn:disabled { opacity: .5; cursor: not-allowed; }
-    .btn-primary  { background: linear-gradient(135deg,#f6821f,#ff4500); color: #fff; }
-    .btn-secondary{ background: #1f2937; color: #e2e8f0; border: 1px solid #374151; }
-    .btn-matrix   { background: #000; color: #00ff41; border: 1px solid #00ff41;
-                    font-family: monospace; text-shadow: 0 0 6px #00ff41; }
-    .btn-matrix:hover { background: #001a00; box-shadow: 0 0 12px #00ff4155; }
-    #sync-status { font-size: 13px; color: #9ca3af; align-self: center; }
+    /* \u2500 Switches \u2500 */
+    .switch { appearance: none; width: 34px; height: 20px; border-radius: 999px; background: var(--border-2); position: relative; cursor: pointer; transition: background .15s; display: inline-block; vertical-align: middle; }
+    .switch::after { content: ""; position: absolute; top: 2px; left: 2px; width: 16px; height: 16px; border-radius: 50%; background: #fff; transition: left .15s; }
+    .switch:checked { background: var(--orange); }
+    .switch:checked::after { left: 16px; }
 
-    /* \u2500\u2500 Matrix Terminal \u2500\u2500 */
-    #matrix-wrap {
-      display: none;
-      margin-bottom: 32px;
-      border-radius: 12px;
-      overflow: hidden;
-      border: 1px solid #00ff4133;
-      box-shadow: 0 0 40px #00ff4122, inset 0 0 80px #000a00;
-    }
-    .matrix-titlebar {
-      background: #000;
-      border-bottom: 1px solid #00ff4133;
-      padding: 8px 16px;
-      display: flex; align-items: center; justify-content: space-between;
-    }
-    .matrix-titlebar-left { display: flex; align-items: center; gap: 10px; }
-    .matrix-dot { width: 12px; height: 12px; border-radius: 50%; }
-    .matrix-dot.red    { background:#ff5f56; }
-    .matrix-dot.yellow { background:#ffbd2e; }
-    .matrix-dot.green  { background:#27c93f; }
-    .matrix-title {
-      font-family: monospace; font-size: 12px; color: #00ff41;
-      text-shadow: 0 0 6px #00ff41;
-    }
-    .matrix-status {
-      font-family: monospace; font-size: 11px; color: #00bb30;
-      display: flex; align-items: center; gap: 6px;
-    }
-    .matrix-blink {
-      display: inline-block; width: 8px; height: 8px; border-radius: 50%;
-      background: #00ff41;
-      animation: mblink 1s step-start infinite;
-    }
-    @keyframes mblink { 50% { opacity: 0; } }
-    #matrix-term {
-      background: #000;
-      padding: 18px 22px;
-      height: 420px;
-      overflow-y: auto;
-      font-family: "Courier New", "Lucida Console", monospace;
-      font-size: 12.5px;
-      line-height: 1.6;
-      color: #00cc33;
-      text-shadow: 0 0 4px #00cc3388;
-      scroll-behavior: smooth;
-    }
-    /* scanline effect */
-    #matrix-term::after {
-      content: "";
-      display: block;
-      position: sticky;
-      bottom: 0; left: 0; right: 0;
-      height: 2px;
-      background: rgba(0,255,65,.06);
-      pointer-events: none;
-    }
+    /* \u2500 Buttons in tables \u2500 */
+    .btn-icon { appearance: none; cursor: pointer; background: rgba(237,76,92,.1); border: 1px solid rgba(237,76,92,.3); color: var(--err); font: 600 11px var(--font-ui); border-radius: 4px; padding: 4px 10px; }
+    .btn-icon:hover { background: rgba(237,76,92,.2); }
+
+    /* \u2500 List manager \u2500 */
+    .listbar { padding: 12px 16px 4px; display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap; }
+    .listbar .tabs { gap: 4px; }
+    .count-pill { font: 600 12px var(--font-mono); font-variant-numeric: tabular-nums; background: var(--panel-2); border: 1px solid var(--border-2); border-radius: 999px; padding: 2px 12px; color: var(--text); }
+    .pager { display: flex; justify-content: center; align-items: center; gap: 14px; padding: 10px; border-top: 1px solid var(--border); font: 12px var(--font-mono); color: var(--text-2); }
+    .pager button { appearance: none; cursor: pointer; background: var(--panel-2); border: 1px solid var(--border-2); color: var(--text); border-radius: 4px; font: 600 12px var(--font-ui); padding: 4px 12px; }
+    .pager button:disabled { opacity: .4; cursor: not-allowed; }
+
+    /* \u2500 Terminal \u2500 */
+    .termbar { display: flex; align-items: center; gap: 14px; margin-bottom: 14px; flex-wrap: wrap; }
+    #stream-blink { display: none; width: 8px; height: 8px; border-radius: 50%; background: var(--orange); animation: tpulse 1.2s infinite; }
+    #stream-label { font: 600 11px var(--font-mono); letter-spacing: .08em; color: var(--text-2); }
+    .console-wrap { background: var(--console); border: 1px solid var(--border); border-radius: 8px; }
+    #matrix-term { height: 440px; overflow-y: auto; padding: 16px 18px; font: 12.5px/1.65 var(--font-mono); color: #C6CAD2; scroll-behavior: smooth; }
     .ml { display: block; white-space: pre-wrap; word-break: break-all; }
-    .ml-dim    { color: #006618; }
-    .ml-head   { color: #00ff41; font-weight: bold; text-shadow: 0 0 8px #00ff41; }
-    .ml-step   { color: #39ff14; font-weight: bold; }
-    .ml-feed   { color: #00cc33; }
-    .ml-intel  { color: #00e5cc; text-shadow: 0 0 4px #00e5cc66; }
-    .ml-add    { color: #00ff41; }
-    .ml-remove { color: #ff6b35; text-shadow: 0 0 4px #ff6b3566; }
-    .ml-done   { color: #00ff41; font-weight: bold; text-shadow: 0 0 10px #00ff41; }
-    .ml-error  { color: #ff3333; text-shadow: 0 0 6px #ff333388; }
-    .ml-cursor::after {
-      content: "\u2588";
-      animation: mblink 1s step-start infinite;
-      color: #00ff41;
-    }
+    .ml-dim { color: #4E5158; }
+    .ml-head { color: var(--orange); font-weight: 600; }
+    .ml-step { color: var(--orange-2); font-weight: 600; }
+    .ml-error { color: var(--err); }
+    .ml-done { color: var(--ok); font-weight: 600; }
+    .ml-intel { color: var(--blue); }
+    .ml-add { color: var(--ok); }
+    .ml-remove { color: #FF8A5C; }
 
-    /* \u2500\u2500 Feed settings \u2500\u2500 */
-    td input[type=checkbox] { width:16px; height:16px; accent-color:#f6821f; cursor:pointer; }
-    .custom-tag {
-      font-size:9px; font-weight:700; letter-spacing:.06em; text-transform:uppercase;
-      background:rgba(139,92,246,.2); color:#a78bfa; border:1px solid rgba(139,92,246,.35);
-      border-radius:4px; padding:1px 6px; margin-left:8px; vertical-align:middle;
-    }
-    .btn-remove {
-      background:rgba(239,68,68,.12); color:#f87171; border:1px solid rgba(239,68,68,.35);
-      border-radius:6px; padding:4px 10px; font-size:11px; cursor:pointer;
-    }
-    .btn-remove:hover { background:rgba(239,68,68,.25); }
-    td.settings-actions { text-align: right; }
-    .custom-add {
-      display:flex; gap:10px; align-items:center; flex-wrap:wrap;
-      padding:14px 16px; border-top:1px solid #1f2937;
-    }
-    .custom-add input[type=text] {
-      flex:1; min-width:260px; background:#0a0e1a; border:1px solid #374151; border-radius:8px;
-      color:#e2e8f0; padding:10px 12px; font-size:13px; font-family:monospace;
-    }
-    .custom-add input[type=text]:focus { outline:none; border-color:#f6821f; }
-    .custom-add select {
-      background:#0a0e1a; border:1px solid #374151; border-radius:8px;
-      color:#e2e8f0; padding:10px 12px; font-size:13px;
-    }
-    #feed-status { font-size:12px; color:#9ca3af; }
-    .feed-hint { width:100%; font-size:11px; color:#6b7280; }
-    #item-search { max-width:180px; }
+    /* \u2500 Code blocks \u2500 */
+    .code { background: var(--console); border: 1px solid var(--border); border-radius: 6px; padding: 10px 12px; font: 12.5px/1.7 var(--font-mono); color: var(--text); }
+    .code .var { color: var(--orange-2); font-weight: 600; }
+    .policy-label { font: 700 10.5px var(--font-ui); text-transform: uppercase; letter-spacing: .06em; color: var(--text-3); margin-bottom: 8px; }
+    .policy-desc { font-size: 12px; color: var(--text-3); margin-top: 8px; }
 
-    /* \u2500\u2500 List items manager \u2500\u2500 */
-    .tabs { display:flex; gap:8px; }
-    .tab {
-      padding:6px 16px; border-radius:8px; border:1px solid #374151;
-      background:#0a0e1a; color:#9ca3af; font-size:12px; font-weight:600; cursor:pointer;
-      transition: opacity .15s;
-    }
-    .tab:hover { opacity:.85; }
-    .tab.active { background:linear-gradient(135deg,#f6821f,#ff4500); color:#fff; border-color:transparent; }
-    .item-value { font-family:monospace; font-size:12px; word-break:break-all; }
-    .badge-manual {
-      display:inline-block; padding:1px 6px; margin-left:8px; border-radius:4px;
-      font-size:9px; font-weight:700; letter-spacing:.05em; text-transform:uppercase;
-      background:rgba(139,92,246,.2); color:#a78bfa; border:1px solid rgba(139,92,246,.35);
-      vertical-align:middle;
-    }
-    .btn-icon {
-      background:rgba(239,68,68,.12); color:#f87171; border:1px solid rgba(239,68,68,.35);
-      border-radius:6px; padding:3px 9px; font-size:11px; cursor:pointer;
-    }
-    .btn-icon:hover { background:rgba(239,68,68,.25); }
-    .items-pager {
-      display:flex; align-items:center; gap:12px; justify-content:center;
-      padding:10px; border-top:1px solid #1f2937; font-size:12px; color:#9ca3af;
-    }
-    .items-pager button {
-      background:#1f2937; color:#e2e8f0; border:1px solid #374151;
-      border-radius:6px; padding:4px 12px; cursor:pointer; font-size:12px;
-    }
-    .items-pager button:disabled { opacity:.4; cursor:not-allowed; }
+    /* \u2500 Footer \u2500 */
+    .foot { max-width: 1120px; margin: 30px auto 0; padding: 0 24px; color: var(--text-3); font-size: 12px; display: flex; gap: 6px; flex-wrap: wrap; align-items: center; }
+    .foot .sep { color: var(--border-2); }
 
-    /* \u2500\u2500 Footer \u2500\u2500 */
-    .footer {
-      text-align: center; margin-top: 48px;
-      font-size: 12px; color: #374151;
-    }
-    .footer a { color: #f6821f; text-decoration: none; }
+    .noscript { max-width: 1120px; margin: 16px auto 0; padding: 10px 16px; border: 1px solid rgba(251,173,65,.35); background: rgba(251,173,65,.08); color: var(--orange-2); border-radius: 8px; font-size: 13px; }
 
-    /* \u2500\u2500 Pulse dot \u2500\u2500 */
-    .pulse { display: inline-block; width: 8px; height: 8px; border-radius: 50%; background: #10b981; margin-right: 6px; animation: pulse 2s infinite; }
-    @keyframes pulse { 0%,100%{opacity:1;transform:scale(1)} 50%{opacity:.5;transform:scale(1.3)} }
+    @media (max-width: 780px) {
+      .topbar-in { flex-wrap: wrap; height: auto; padding: 10px 16px; gap: 8px 12px; }
+      .clock { display: none; }
+      .tabs { order: 3; width: 100%; overflow-x: auto; padding-bottom: 2px; }
+      main { padding: 20px 16px 0; }
+      .grid2 { grid-template-columns: 1fr; }
+      .trace { flex-wrap: wrap; gap: 10px 0; }
+      .tnode { min-width: 33%; }
+      .tnode::after { display: none; }
+      #matrix-term { height: 320px; }
+    }
+    @media (prefers-reduced-motion: reduce) {
+      * { animation: none !important; transition: none !important; scroll-behavior: auto !important; }
+    }
   </style>
 </head>
 <body>
 
-<div class="header">
-  <div class="header-logo">\u{1F6E1}</div>
-  <div class="header-text">
-    <h1>Threat Intelligence IOC Sync</h1>
-    <p><span class="pulse"></span>Live feed sync to Cloudflare Gateway Lists \u2014 auto-sync daily at 08:00 UTC</p>
-  </div>
-</div>
-
-<div class="container">
-
-  <!-- Stats row -->
-  <div class="stats">
-    <div class="stat-card orange">
-      <div class="stat-label">Domain IOCs</div>
-      <div class="stat-value">${(lastSync?.domains.total ?? 0).toLocaleString()}</div>
-      <div class="stat-sub">IOC-Domains Gateway List</div>
-    </div>
-    <div class="stat-card blue">
-      <div class="stat-label">URL IOCs</div>
-      <div class="stat-value">${(lastSync?.urls.total ?? 0).toLocaleString()}</div>
-      <div class="stat-sub">IOC-URLs Gateway List</div>
-    </div>
-    <div class="stat-card green">
-      <div class="stat-label">Intel Skipped</div>
-      <div class="stat-value">${(lastSync?.domains.intelSkipped ?? 0).toLocaleString()}</div>
-      <div class="stat-sub">Already covered by CF policy</div>
-    </div>
-    <div class="stat-card purple">
-      <div class="stat-label">Last Sync</div>
-      <div class="stat-value" style="font-size:18px;padding-top:4px">${ts}</div>
-      <div class="stat-sub">Elapsed: ${elapsed}</div>
-    </div>
-    <div class="stat-card ${errors.length ? "red" : "green"}">
-      <div class="stat-label">Feed Errors</div>
-      <div class="stat-value">${errors.length}</div>
-      <div class="stat-sub">${errors.length ? "See details below" : "All feeds healthy"}</div>
-    </div>
-  </div>
-
-  <!-- Actions -->
-  <div class="actions">
-    <button class="btn btn-primary" id="sync-btn" onclick="triggerSync()">\u26A1 Run Sync Now</button>
-    <button class="btn btn-matrix" id="stream-btn" onclick="toggleStream()">&#9654; Live Sync Terminal</button>
-    <button class="btn btn-secondary" onclick="location.reload()">\u21BB Refresh</button>
-    <span id="sync-status"></span>
-  </div>
-
-  <!-- Matrix Terminal -->
-  <div id="matrix-wrap">
-    <div class="matrix-titlebar">
-      <div class="matrix-titlebar-left">
-        <span class="matrix-dot red"></span>
-        <span class="matrix-dot yellow"></span>
-        <span class="matrix-dot green"></span>
-        <span class="matrix-title">ti-ioc-sync \u2014 live stream &nbsp;/sync/stream</span>
-      </div>
-      <div class="matrix-status">
-        <span class="matrix-blink" id="stream-blink" style="display:none"></span>
-        <span id="stream-label">READY</span>
+<header class="topbar">
+  <div class="topbar-in">
+    <div class="brand">
+      <svg class="mark" viewBox="0 0 24 24" aria-hidden="true">
+        <defs>
+          <linearGradient id="cf-grad" x1="0" y1="0" x2="1" y2="1">
+            <stop offset="0" stop-color="#FAAE40"/>
+            <stop offset=".55" stop-color="#F6821F"/>
+            <stop offset="1" stop-color="#E8590C"/>
+          </linearGradient>
+        </defs>
+        <path fill="url(#cf-grad)" d="M7.2 18.6a4.3 4.3 0 0 1-.1-8.6 5.7 5.7 0 0 1 11.1-1.3 4 4 0 0 1-.4 7.9z"/>
+      </svg>
+      <div class="brand-text">
+        <span class="brand-name">TI IOC Sync</span>
+        <span class="brand-sub">Zero Trust Gateway lists</span>
       </div>
     </div>
-    <div id="matrix-term"><span class="ml ml-dim">-- press &#9654; Live Sync Terminal to start --</span></div>
+    <nav class="tabs" role="tablist" aria-label="Sections">
+      <button class="tab active" id="nav-overview" role="tab" aria-selected="true" onclick="showTab('overview')">Overview</button>
+      <button class="tab" id="nav-feeds" role="tab" aria-selected="false" onclick="showTab('feeds')">Feeds</button>
+      <button class="tab" id="nav-lists" role="tab" aria-selected="false" onclick="showTab('lists')">Lists</button>
+      <button class="tab" id="nav-terminal" role="tab" aria-selected="false" onclick="showTab('terminal')">Terminal</button>
+    </nav>
+    <div class="clock"><span id="clock">--:--:--</span> <small>ICT</small></div>
   </div>
+</header>
 
-  ${errHtml}
+<noscript><div class="noscript">The dashboard needs JavaScript for syncs, feed settings, and list management. The status below is live from the last sync.</div></noscript>
 
-  <!-- Logic flow -->
-  <div class="section">
-    <div class="section-title">How It Works \u2014 Sync Logic</div>
-    <div class="flow">
-      <div class="flow-row">
-        <div class="flow-step">
-          <div class="flow-icon orange">\u{1F310}</div>
-          <div class="flow-name">OSINT Feeds</div>
-          <div class="flow-desc">Feeds fetched daily at 08:00 UTC via cron</div>
-        </div>
-        <div class="flow-arrow">\u203A</div>
-        <div class="flow-step">
-          <div class="flow-icon blue">\u{1F500}</div>
-          <div class="flow-name">Parse &amp; Split</div>
-          <div class="flow-desc">URL feeds \u2192 full URLs<br>Domain feeds \u2192 hostnames</div>
-        </div>
-        <div class="flow-arrow">\u203A</div>
-        <div class="flow-step">
-          <div class="flow-icon purple">\u{1F9F9}</div>
-          <div class="flow-name">Deduplicate</div>
-          <div class="flow-desc">Dedup + whitelist + 5,000 item cap per list</div>
-        </div>
-        <div class="flow-arrow">\u203A</div>
-        <div class="flow-step">
-          <div class="flow-icon cyan">\u{1F50D}</div>
-          <div class="flow-name">CF Intel Check</div>
-          <div class="flow-desc">Domains only \u2014 skip if CF already categorises as threat</div>
-        </div>
-        <div class="flow-arrow">\u203A</div>
-        <div class="flow-step">
-          <div class="flow-icon green">\u{1F4CB}</div>
-          <div class="flow-name">Diff</div>
-          <div class="flow-desc">Compare vs current Gateway List \u2014 compute add/remove</div>
-        </div>
-        <div class="flow-arrow">\u203A</div>
-        <div class="flow-step">
-          <div class="flow-icon orange">\u2705</div>
-          <div class="flow-name">Sync to CF</div>
-          <div class="flow-desc">PATCH Gateway List \u2014 remove stale, append new</div>
+<main>
+
+  <!-- \u2500\u2500 Overview \u2500\u2500 -->
+  <section id="panel-overview" role="tabpanel" aria-label="Overview">
+    <h1 class="hero">Blocking <span class="num">${domainCount}</span> hostnames <span aria-hidden="true">\u00B7</span> <span class="num">${urlCount}</span> full URLs</h1>
+    <p class="hero-sub">Last sync ${ts} \u00B7 ${elapsed} \u00B7 ${health}</p>
+
+    <div class="actions">
+      <button class="btn btn-primary" id="sync-btn" onclick="triggerSync()">Run sync</button>
+      <button class="btn btn-ghost" onclick="showTab('terminal'); toggleStream()">\u25B6 Stream live sync</button>
+      <button class="btn btn-ghost" onclick="location.reload()">Refresh</button>
+      <span class="status" id="sync-status"></span>
+    </div>
+
+    ${errHtml}
+
+    <div class="card">
+      <div class="card-head">
+        <span class="card-title">Feed contribution</span>
+        <span class="card-note">items from the last sync</span>
+      </div>
+      <table>
+        <thead><tr><th>Feed</th><th>Type</th><th style="text-align:right">Items</th></tr></thead>
+        <tbody>${feedTableRows}
+        </tbody>
+      </table>
+      <div class="card-foot">+${lastSync?.domains.added ?? 0}/-${lastSync?.domains.removed ?? 0} domains and +${lastSync?.urls.added ?? 0}/-${lastSync?.urls.removed ?? 0} URLs this cycle \u00B7 ${lastSync?.domains.intelSkipped ?? 0} domains skipped by Intel dedup \u00B7 5,000-item cap per list</div>
+    </div>
+
+    <div class="card">
+      <div class="card-head"><span class="card-title">Sync pipeline</span></div>
+      <div class="card-body">${traceHtml(false)}</div>
+      <div class="card-foot">Runs daily at 08:00 UTC. Removals are fail-closed \u2014 if a feed is broken or empty, stale items are left alone instead of unblocked.</div>
+    </div>
+
+    <div class="card">
+      <div class="card-head">
+        <span class="card-title">Policy wiring</span>
+        <span class="card-note">reference the lists in Gateway policies</span>
+      </div>
+      <div class="card-body">
+        <div class="grid2">
+          <div>
+            <div class="policy-label">DNS policy</div>
+            <code class="code">dns.fqdn in <span class="var">$IOC_DNS</span></code>
+            <p class="policy-desc">Blocks resolution of malicious hostnames before a connection is made.</p>
+          </div>
+          <div>
+            <div class="policy-label">HTTP policy</div>
+            <code class="code">http.request.host.host in <span class="var">$IOC_DNS</span><br>OR http.request.full_uri in <span class="var">$IOC_URL</span></code>
+            <p class="policy-desc">Blocks requests by hostname, and specific full URLs (path-aware).</p>
+          </div>
         </div>
       </div>
     </div>
-  </div>
+  </section>
 
-  <!-- Feed tables -->
-  <div class="two-col">
-    <div class="section">
-      <div class="section-title">URL Feeds \u2192 IOC-URLs</div>
-      <div class="table-wrap">
-        <div class="list-header">
-          <span class="list-header-title">Full URL blocking (path-aware)</span>
-          <span class="list-count-pill">${(lastSync?.urls.total ?? 0).toLocaleString()} URLs</span>
-        </div>
-        <table>
-          <thead><tr><th>Type</th><th>Feed</th><th style="text-align:right">Items</th></tr></thead>
-          <tbody>${feedRows(urlFeeds, "url")}</tbody>
-        </table>
-        <div style="padding:8px 16px;font-size:11px;color:#6b7280;border-top:1px solid #1f2937">
-          +${lastSync?.urls.added ?? 0} added &nbsp;\xB7&nbsp; -${lastSync?.urls.removed ?? 0} removed this cycle
-        </div>
-      </div>
-    </div>
+  <!-- \u2500\u2500 Feeds \u2500\u2500 -->
+  <section id="panel-feeds" role="tabpanel" aria-label="Feed settings" hidden>
+    <h2 class="panel-title">Feed Settings</h2>
+    <p class="panel-sub">Toggles apply on the next sync. Items from a feed return as long as the feed still lists them \u2014 disable a feed to drop its items for good.</p>
 
-    <div class="section">
-      <div class="section-title">Domain Feeds \u2192 IOC-Domains</div>
-      <div class="table-wrap">
-        <div class="list-header">
-          <span class="list-header-title">Hostname blocking (DNS + HTTP)</span>
-          <span class="list-count-pill">${(lastSync?.domains.total ?? 0).toLocaleString()} domains</span>
-        </div>
-        <table>
-          <thead><tr><th>Type</th><th>Feed</th><th style="text-align:right">Items</th></tr></thead>
-          <tbody>${feedRows(domainFeeds, "domain")}</tbody>
-        </table>
-        <div style="padding:8px 16px;font-size:11px;color:#6b7280;border-top:1px solid #1f2937">
-          +${lastSync?.domains.added ?? 0} added &nbsp;\xB7&nbsp; -${lastSync?.domains.removed ?? 0} removed &nbsp;\xB7&nbsp; ${lastSync?.domains.intelSkipped ?? 0} skipped (CF Intel)
-        </div>
-      </div>
-    </div>
-  </div>
-
-  <!-- Feed settings -->
-  <div class="section">
-    <div class="section-title">Feed Settings \u2014 Enable / Disable / Custom Feeds</div>
-    <div class="table-wrap">
+    <div class="card">
       <table>
         <thead><tr><th>Enabled</th><th>Type</th><th>Feed</th><th>List</th><th></th></tr></thead>
         <tbody>
 ${feedSettingsRows(cfg)}
         </tbody>
       </table>
-      <div class="custom-add">
-        <input type="text" id="custom-url" placeholder="https://example.com/blocklist.txt" spellcheck="false"/>
-        <select id="custom-type">
-          <option value="domain">Domain list</option>
-          <option value="url">URL list</option>
+      <div class="add-row">
+        <input type="text" id="custom-url" placeholder="https://example.com/blocklist.txt" spellcheck="false" aria-label="Custom feed URL"/>
+        <select id="custom-type" aria-label="Custom feed type">
+          <option value="domain">Hostnames (IOC_DNS)</option>
+          <option value="url">Full URLs (IOC_URL)</option>
         </select>
-        <button class="btn btn-primary" onclick="addCustomFeed()">+ Add Feed</button>
-        <span id="feed-status"></span>
-        <div class="feed-hint">Only <b>.txt</b> plain-text lists are accepted \u2014 one domain or URL per line, # comments allowed. Custom feeds are capped at 500 items each (max 10 feeds). IP-literal, localhost, and credential-bearing URLs are rejected. Admin actions require the <b>ADMIN_TOKEN</b> secret (prompted once per tab session).</div>
+        <button class="btn btn-primary" onclick="addCustomFeed()">Add feed</button>
+        <span class="status" id="feed-status"></span>
+        <div class="hint">Only <b>.txt</b> plain-text lists are accepted \u2014 one hostname or URL per line, # comments allowed. Custom feeds are capped at 500 items each (max 10). IP-literal, localhost, and credential-bearing URLs are rejected. Admin actions ask for the <b>ADMIN_TOKEN</b> secret once per tab session.</div>
       </div>
     </div>
-  </div>
+  </section>
 
-  <!-- List items manager -->
-  <div class="section">
-    <div class="section-title">Gateway List Items \u2014 Manual Add / Remove</div>
-    <div class="table-wrap">
-      <div class="list-header">
+  <!-- \u2500\u2500 Lists \u2500\u2500 -->
+  <section id="panel-lists" role="tabpanel" aria-label="Gateway list items" hidden>
+    <h2 class="panel-title">Gateway list items</h2>
+    <p class="panel-sub">Manual items are stored in KV and survive syncs. Feed-sourced items return on the next sync \u2014 disable the feed on the Feeds tab to drop them permanently. Whitelisted hostnames are rejected; the 5,000-item cap applies.</p>
+
+    <div class="card">
+      <div class="listbar">
         <div class="tabs">
-          <button id="tab-domain" class="tab active" onclick="switchListTab('domain')">IOC-Domains</button>
-          <button id="tab-url" class="tab" onclick="switchListTab('url')">IOC-URLs</button>
+          <button class="tab active" id="tab-domain" onclick="switchListTab('domain')">IOC_DNS \u00B7 hostnames</button>
+          <button class="tab" id="tab-url" onclick="switchListTab('url')">IOC_URL \u00B7 full URLs</button>
         </div>
-        <span class="list-count-pill" id="items-count">\u2014</span>
+        <span class="count-pill" id="items-count">\u2014</span>
       </div>
-      <div class="custom-add">
-        <input type="text" id="item-input" placeholder="example.com (comma/newline separated for multiple)" spellcheck="false"/>
-        <button class="btn btn-primary" onclick="addListItems()">+ Add</button>
-        <input type="text" id="item-search" placeholder="Search\u2026" oninput="renderItemsTable()" spellcheck="false"/>
-        <button class="btn btn-secondary" onclick="loadListItems()">\u21BB Load / Refresh</button>
-        <span id="items-status"></span>
-        <div class="feed-hint">Manually added items are stored in KV and survive syncs (they are merged ahead of feed content). Items that come from a feed always return on the next sync if the feed still lists them \u2014 disable the feed to drop them permanently. Whitelisted domains are rejected. The 5,000-item cap applies.</div>
+      <div class="add-row">
+        <input type="text" id="item-input" placeholder="example.com (comma/newline separated for multiple)" spellcheck="false" aria-label="Items to add"/>
+        <button class="btn btn-primary" onclick="addListItems()">Add</button>
+        <input type="text" id="item-search" placeholder="Search\u2026" oninput="renderItemsTable()" spellcheck="false" aria-label="Search items"/>
+        <button class="btn btn-ghost" onclick="loadListItems()">\u21BB Load / Refresh</button>
+        <span class="status" id="items-status"></span>
       </div>
       <table>
         <thead><tr><th>Value</th><th style="text-align:right;width:100px"></th></tr></thead>
         <tbody id="items-tbody"><tr><td colspan="2" class="empty">Press \u21BB Load / Refresh to view items (requires the admin token)</td></tr></tbody>
       </table>
-      <div class="items-pager">
+      <div class="pager">
         <button id="items-prev" onclick="itemsPage(-1)" disabled>\u2039 Prev</button>
         <span id="items-page-info">\u2013</span>
         <button id="items-next" onclick="itemsPage(1)" disabled>Next \u203A</button>
       </div>
     </div>
-  </div>
+  </section>
 
-  <!-- Intel explanation -->
-  <div class="section">
-    <div class="section-title">Cloudflare Intel Deduplication</div>
-    <div class="flow" style="padding:20px 24px">
-      <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:20px">
-        <div style="text-align:center;padding:16px;background:#0f172a;border-radius:10px;border:1px solid #1f2937">
-          <div style="font-size:28px;margin-bottom:8px">\u{1F50E}</div>
-          <div style="font-size:13px;font-weight:600;color:#f1f5f9;margin-bottom:4px">CF Intel API</div>
-          <div style="font-size:12px;color:#6b7280">Checks each new domain against Cloudflare's threat intelligence database</div>
-        </div>
-        <div style="text-align:center;padding:16px;background:#0f172a;border-radius:10px;border:1px solid rgba(239,68,68,.3)">
-          <div style="font-size:28px;margin-bottom:8px">\u{1F6AB}</div>
-          <div style="font-size:13px;font-weight:600;color:#f87171;margin-bottom:4px">Skip if already known</div>
-          <div style="font-size:12px;color:#6b7280">Malware \xB7 Phishing \xB7 C2 &amp; Botnet \xB7 Cryptomining \xB7 DGA \xB7 Spyware \xB7 Scam \xB7 Anonymizer</div>
-        </div>
-        <div style="text-align:center;padding:16px;background:#0f172a;border-radius:10px;border:1px solid rgba(16,185,129,.3)">
-          <div style="font-size:28px;margin-bottom:8px">\u2705</div>
-          <div style="font-size:13px;font-weight:600;color:#34d399;margin-bottom:4px">Add only new threats</div>
-          <div style="font-size:12px;color:#6b7280">Avoids filling the 5,000 item limit with domains Gateway already blocks via built-in categories</div>
-        </div>
-      </div>
+  <!-- \u2500\u2500 Terminal \u2500\u2500 -->
+  <section id="panel-terminal" role="tabpanel" aria-label="Live sync terminal" hidden>
+    <h2 class="panel-title">Live sync</h2>
+    <p class="panel-sub">Watch a full sync run end-to-end. The trace below follows each STEP as it happens; removals skip while any feed is broken.</p>
+
+    <div class="termbar">
+      <button class="btn btn-primary" id="stream-btn" onclick="toggleStream()">\u25B6 Stream live sync</button>
+      <span id="stream-blink"></span>
+      <span id="stream-label">READY</span>
     </div>
-  </div>
 
-  <!-- Gateway policy usage -->
-  <div class="section">
-    <div class="section-title">Gateway Policy Usage</div>
-    <div class="table-wrap" style="padding:20px 24px">
-      <div style="display:grid;grid-template-columns:1fr 1fr;gap:16px">
-        <div style="background:#0f172a;border-radius:10px;padding:16px;border:1px solid #1f2937">
-          <div style="font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.06em;color:#6b7280;margin-bottom:10px">DNS Policy</div>
-          <code style="font-size:12px;color:#34d399;background:#0a0e1a;padding:10px 12px;border-radius:6px;display:block;line-height:1.7">dns.fqdn in $IOC-Domains</code>
-          <div style="font-size:12px;color:#6b7280;margin-top:10px">Blocks DNS resolution of malicious hostnames before any connection is made</div>
-        </div>
-        <div style="background:#0f172a;border-radius:10px;padding:16px;border:1px solid #1f2937">
-          <div style="font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.06em;color:#6b7280;margin-bottom:10px">HTTP Policy</div>
-          <code style="font-size:12px;color:#60a5fa;background:#0a0e1a;padding:10px 12px;border-radius:6px;display:block;line-height:1.7">http.request.full_uri in $IOC-URLs<br>OR http.request.domains[*] in $IOC-Domains</code>
-          <div style="font-size:12px;color:#6b7280;margin-top:10px">Blocks specific malicious URLs (path-aware) and any request to known malicious domains</div>
-        </div>
-      </div>
+    <div class="card">
+      <div class="card-body">${traceHtml(true)}</div>
     </div>
-  </div>
 
-</div><!-- /container -->
+    <div class="console-wrap">
+      <div id="matrix-term"><span class="ml ml-dim">Press \u25B6 Stream live sync to start a run.</span></div>
+    </div>
+  </section>
 
-<div class="footer">
-  Powered by <a href="https://developers.cloudflare.com/cloudflare-one/policies/gateway/" target="_blank">Cloudflare Gateway</a> &nbsp;\xB7&nbsp;
-  <a href="/api/status" target="_blank">JSON API</a> &nbsp;\xB7&nbsp;
-  Auto-syncs daily at 08:00 UTC &nbsp;\xB7&nbsp;
-  <a href="https://github.com/pongpisit/cloudflare-ti-ioc-sync" target="_blank">github.com/pongpisit/cloudflare-ti-ioc-sync</a>
-</div>
+</main>
+
+<footer class="foot">
+  <span>TI IOC Sync</span><span class="sep">\u00B7</span>
+  <span>runs on Cloudflare Workers</span><span class="sep">\u00B7</span>
+  <span>syncs daily at 08:00 UTC</span><span class="sep">\u00B7</span>
+  <a href="/api/status">JSON status</a><span class="sep">\u00B7</span>
+  <a href="https://github.com/pongpisit/cloudflare-ti-ioc-sync" target="_blank" rel="noopener">source on GitHub</a>
+</footer>
 
 <script>
-// \u2500\u2500 Admin token \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500
+// \u2500\u2500 Navigation \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500
+function showTab(name) {
+  var names = ['overview', 'feeds', 'lists', 'terminal'];
+  for (var i = 0; i < names.length; i++) {
+    var p = document.getElementById('panel-' + names[i]);
+    var b = document.getElementById('nav-' + names[i]);
+    var on = names[i] === name;
+    if (p) p.hidden = !on;
+    if (b) {
+      b.className = on ? 'tab active' : 'tab';
+      b.setAttribute('aria-selected', on ? 'true' : 'false');
+    }
+  }
+}
+
+function tickClock() {
+  var el = document.getElementById('clock');
+  if (!el) return;
+  el.textContent = new Date().toLocaleTimeString('en-GB', { timeZone: 'Asia/Bangkok', hour12: false });
+}
+tickClock();
+setInterval(tickClock, 1000);
+
+// \u2500\u2500 Admin token \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500
 // All mutating/admin endpoints require the ADMIN_TOKEN Worker secret, sent as the
 // X-Auth-Token header. The token is kept in sessionStorage (per tab session only).
 // NOTE: this is the dashboard admin token (wrangler secret put ADMIN_TOKEN), NOT the
@@ -688,31 +533,31 @@ async function authFetch(input, init) {
   return fetch(input, Object.assign({}, init || {}, { headers: headers }));
 }
 
-// \u2500\u2500 Sync button \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500
+// \u2500\u2500 Sync button \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500
 async function triggerSync() {
   const btn = document.getElementById('sync-btn');
   const status = document.getElementById('sync-status');
   btn.disabled = true;
-  btn.textContent = '\u23F3 Syncing\u2026';
+  btn.textContent = 'Syncing\u2026';
   status.textContent = '';
   try {
     // Inline request: the sync runs within the request lifetime. (Background
     // waitUntil tasks are cancelled ~30s after the response, so POST /sync
     // cannot carry a full sync.) If the edge proxy ever times the request
-    // out, the Live Sync Terminal still streams every step.
+    // out, the live terminal still streams every step.
     const res = await authFetch('/sync/run', { method: 'POST' });
     const authErr = handleAuthError(res);
     if (authErr) { status.textContent = authErr; return; }
     if (!res.ok) {
       const data = await res.json().catch(function(){ return {}; });
-      status.textContent = '\u274C ' + (data.error || 'HTTP ' + res.status + ' \u2014 try the Live Sync Terminal instead');
+      status.textContent = '\u274C ' + (data.error || 'HTTP ' + res.status + ' \u2014 try the live terminal instead');
       return;
     }
     const data = await res.json();
     if (data.status === 'ok') {
       const r = data.result;
-      status.textContent = '\u2705 Done \u2014 domains +' + r.domains.added + '/-' + r.domains.removed + '=' + r.domains.total +
-                          '  urls +' + r.urls.added + '/-' + r.urls.removed + '=' + r.urls.total;
+      status.textContent = '\u2705 Done \u2014 hostnames +' + r.domains.added + '/-' + r.domains.removed + '=' + r.domains.total +
+                          '  URLs +' + r.urls.added + '/-' + r.urls.removed + '=' + r.urls.total;
       setTimeout(function(){ location.reload(); }, 2500);
     } else {
       status.textContent = '\u274C ' + (data.error || 'Unknown error');
@@ -721,10 +566,10 @@ async function triggerSync() {
     status.textContent = e.message === 'admin token required' ? '\u26BF Admin token required' : '\u274C Network error';
   }
   btn.disabled = false;
-  btn.textContent = '\u26A1 Run Sync Now';
+  btn.textContent = 'Run sync';
 }
 
-// \u2500\u2500 Matrix Terminal \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500
+// \u2500\u2500 Live terminal \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500
 let streamController = null;
 let streamOpen = false;
 
@@ -737,7 +582,6 @@ function toggleStream() {
 }
 
 function openStream() {
-  const wrap  = document.getElementById('matrix-wrap');
   const term  = document.getElementById('matrix-term');
   const btn   = document.getElementById('stream-btn');
   const blink = document.getElementById('stream-blink');
@@ -748,15 +592,15 @@ function openStream() {
     return;
   }
 
-  wrap.style.display = 'block';
   term.innerHTML = '';
-  btn.textContent = '\u23F9 Stop Terminal';
+  btn.textContent = '\u23F9 Stop stream';
   blink.style.display = 'inline-block';
   label.textContent = 'STREAMING';
   streamOpen = true;
-
-  // Scroll terminal into view
-  wrap.scrollIntoView({ behavior: 'smooth', block: 'start' });
+  for (var k = 1; k <= 6; k++) {
+    var e2 = document.getElementById('step-' + k);
+    if (e2) e2.className = 'tnode';
+  }
 
   streamController = new AbortController();
 
@@ -767,7 +611,7 @@ function openStream() {
         appendLine(term, '[ERROR] Unauthorized \u2014 check the ADMIN_TOKEN secret');
         label.textContent = 'UNAUTHORIZED';
         blink.style.display = 'none';
-        btn.textContent = '&#9654; Live Sync Terminal';
+        btn.textContent = '\u25B6 Stream live sync';
         streamOpen = false;
         return;
       }
@@ -782,7 +626,7 @@ function openStream() {
             if (buf.trim()) appendLine(term, buf);
             label.textContent = 'DONE';
             blink.style.display = 'none';
-            btn.textContent = '&#9654; Live Sync Terminal';
+            btn.textContent = '\u25B6 Stream live sync';
             streamOpen = false;
             return;
           }
@@ -801,7 +645,7 @@ function openStream() {
       }
       label.textContent = 'CLOSED';
       blink.style.display = 'none';
-      btn.textContent = '&#9654; Live Sync Terminal';
+      btn.textContent = '\u25B6 Stream live sync';
       streamOpen = false;
     });
 }
@@ -811,13 +655,34 @@ function stopStream() {
   const btn   = document.getElementById('stream-btn');
   const blink = document.getElementById('stream-blink');
   const label = document.getElementById('stream-label');
-  btn.textContent = '&#9654; Live Sync Terminal';
+  btn.textContent = '\u25B6 Stream live sync';
   blink.style.display = 'none';
   label.textContent = 'STOPPED';
   streamOpen = false;
 }
 
+// Lights the terminal trace as "STEP n" lines arrive in the stream.
+function markStep(line) {
+  if (line.indexOf('SYNC COMPLETE') >= 0) {
+    for (var k = 1; k <= 6; k++) {
+      var e = document.getElementById('step-' + k);
+      if (e) e.className = 'tnode done';
+    }
+    return;
+  }
+  var i = line.indexOf('STEP ');
+  if (i < 0) return;
+  var n = parseInt(line.charAt(i + 5), 10);
+  if (!n || n < 1 || n > 6) return;
+  for (var k = 1; k <= 6; k++) {
+    var e = document.getElementById('step-' + k);
+    if (!e) continue;
+    e.className = 'tnode' + (k < n ? ' done' : (k === n ? ' active' : ''));
+  }
+}
+
 function appendLine(term, raw) {
+  markStep(raw);
   const line = raw.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
   const span = document.createElement('span');
   span.className = 'ml ' + classifyLine(raw);
@@ -842,7 +707,7 @@ function classifyLine(line) {
   return '';
 }
 
-// \u2500\u2500 Feed settings \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500
+// \u2500\u2500 Feed settings \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500
 const TXT_URL_RE = /^https?:\\/\\/[^\\s?#]+\\.txt([?#]\\S*)?$/i;
 
 async function toggleFeed(cb, id) {
@@ -918,7 +783,8 @@ async function removeCustomFeed(id) {
     document.getElementById('feed-status').textContent = e.message === 'admin token required' ? '\u26BF Admin token required' : '\u274C Network error';
   }
 }
-// \u2500\u2500 List items manager \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500
+
+// \u2500\u2500 List items manager \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500
 let itemsState = { listType: 'domain', items: [], page: 0, perPage: 50 };
 
 function switchListTab(t) {
@@ -997,10 +863,10 @@ function renderItemsTable() {
         tdV.appendChild(b);
       }
       const tdA = document.createElement('td');
-      tdA.style.textAlign = 'right';
+      tdA.className = 'td-actions';
       const btn = document.createElement('button');
       btn.className = 'btn-icon';
-      btn.textContent = '\u2715 Remove';
+      btn.textContent = 'Remove';
       const val = it.value;
       const isManual = !!it.manual;
       btn.addEventListener('click', function() { removeListItem(val, isManual); });
@@ -1060,7 +926,7 @@ async function addListItems() {
 async function removeListItem(value, isManual) {
   const msg = isManual
     ? 'Remove ' + value + ' from the list?'
-    : 'Remove ' + value + ' from the list?\\n\\nNote: this item comes from a feed \\u2014 it returns on the next sync if the feed still lists it. Disable the feed to drop it permanently.';
+    : 'Remove ' + value + ' from the list?\\n\\nNote: this item comes from a feed \u2014 it returns on the next sync if the feed still lists it. Disable the feed to drop it permanently.';
   if (!confirm(msg)) return;
   const status = document.getElementById('items-status');
   try {

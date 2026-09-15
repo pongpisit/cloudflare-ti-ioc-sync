@@ -54,20 +54,43 @@ describe("renderDashboard", () => {
     // AND so must the auth helpers those handlers call (a missing definition parses
     // fine but throws ReferenceError at click time — exactly the bug this guards).
     for (const fn of [
+      "showTab",
+      "tickClock",
       "getAdminToken",
       "handleAuthError",
       "authFetch",
       "triggerSync",
       "toggleStream",
+      "markStep",
+      "appendLine",
+      "classifyLine",
       "toggleFeed",
       "addCustomFeed",
       "removeCustomFeed",
       "switchListTab",
       "loadListItems",
-      "addListItems",
+      "renderItemsTable",
       "itemsPage",
+      "addListItems",
+      "removeListItem",
     ]) {
       expect(match![1]).toContain(`function ${fn}`);
+    }
+  });
+
+  it("renders the tabbed app shell with the pipeline trace", () => {
+    const html = renderDashboard(sample);
+    for (const id of ["nav-overview", "nav-feeds", "nav-lists", "nav-terminal"]) {
+      expect(html).toContain(`id="${id}"`);
+    }
+    // the trace appears twice: static on Overview, live (step-1..6) in the Terminal
+    expect((html.match(/class="trace"/g) ?? []).length).toBe(2);
+    for (let i = 1; i <= 6; i++) expect(html).toContain(`id="step-${i}"`);
+    // every inline onclick handler is defined in the script
+    const js = html.match(/<script>\n([\s\S]*?)\n<\/script>/)![1];
+    const calls = [...html.matchAll(/onclick="(\w+)\(/g)].map((m) => m[1]);
+    for (const name of new Set(calls)) {
+      expect(js).toContain(`function ${name}`);
     }
   });
 
